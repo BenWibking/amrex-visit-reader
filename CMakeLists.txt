@@ -139,6 +139,14 @@ if(NOT VISIT_USE_VENDORED_MPICH)
     list(FILTER VISIT_DATABASE_INCLUDES_CLEAN EXCLUDE REGEX "[Mm]pich")
 endif()
 
+if(NOT VISIT_USE_VENDORED_MPICH AND OPENMPI_INCLUDE_DIRS)
+    foreach(_openmpi_incdir IN LISTS OPENMPI_INCLUDE_DIRS)
+        set(CMAKE_C_FLAGS "-I${_openmpi_incdir} ${CMAKE_C_FLAGS}")
+        set(CMAKE_CXX_FLAGS "-I${_openmpi_incdir} ${CMAKE_CXX_FLAGS}")
+    endforeach()
+    unset(_openmpi_incdir)
+endif()
+
 FetchContent_Declare(
     amrex
     GIT_REPOSITORY https://github.com/AMReX-Codes/amrex.git
