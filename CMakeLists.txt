@@ -44,7 +44,10 @@ function(configure_amrex_plugin target_name)
     if(NOT TARGET ${target_name})
         return()
     endif()
-    if(NOT VISIT_USE_VENDORED_MPICH AND MPI_CXX_INCLUDE_DIRS_LOCAL)
+    if(NOT VISIT_USE_VENDORED_MPICH AND OPENMPI_INCLUDE_DIRS)
+        target_include_directories(${target_name} SYSTEM BEFORE PRIVATE
+            ${OPENMPI_INCLUDE_DIRS})
+    elseif(NOT VISIT_USE_VENDORED_MPICH AND MPI_CXX_INCLUDE_DIRS_LOCAL)
         target_include_directories(${target_name} SYSTEM PRIVATE
             ${MPI_CXX_INCLUDE_DIRS_LOCAL})
     endif()
@@ -83,6 +86,8 @@ set(AMReX_SPACEDIM 3 CACHE STRING "" FORCE)
 
 option(VISIT_USE_VENDORED_MPICH
     "Use VisIt-provided MPICH headers and MPI wrappers when building AMReX" ON)
+set(OPENMPI_INCLUDE_DIRS "" CACHE STRING
+    "OpenMPI include dirs (semicolon-separated) when not using VisIt's MPICH.")
 if(VISIT_USE_VENDORED_MPICH)
     # Force AMReX to use VisIt's MPI runtime and locally-provided MPICH headers.
     set(MPICH_HEADERS_ROOT "" CACHE PATH "Path to MPICH headers (mpi.h)")

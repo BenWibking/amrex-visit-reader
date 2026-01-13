@@ -18,7 +18,7 @@ export CXX="${MPI_CXX_COMPILER}"
 MPI_CXX_INCDIRS=$("${MPI_CXX_COMPILER}" --showme:incdirs 2>/dev/null | tr ' ' '\n' | sed 's/^-I//' | paste -sd ';' -)
 cmake -S . -B build -DVISIT_USE_VENDORED_MPICH=OFF -DAMReX_PIC=ON -DAMReX_BUILD_SHARED_LIBS=ON \
   -DMPI_C_COMPILER="${MPI_C_COMPILER}" -DMPI_CXX_COMPILER="${MPI_CXX_COMPILER}" \
-  -DMPIEXEC_EXECUTABLE="${MPIEXEC_EXECUTABLE}" -DMPI_CXX_INCLUDE_DIRS="${MPI_CXX_INCDIRS}" $1
+  -DMPIEXEC_EXECUTABLE="${MPIEXEC_EXECUTABLE}" -DOPENMPI_INCLUDE_DIRS="${MPI_CXX_INCDIRS}" $1
 cmake --build build -j16
 
 # the plugin should actually be installed to ~/.visit in the build step
