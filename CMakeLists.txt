@@ -147,6 +147,16 @@ if(NOT VISIT_USE_VENDORED_MPICH)
     elseif(MPI_CXX_INCLUDE_PATH)
         set(MPI_CXX_INCLUDE_DIRS_LOCAL "${MPI_CXX_INCLUDE_PATH}")
     endif()
+    if(NOT MPI_CXX_INCLUDE_DIRS_LOCAL AND MPI_CXX_COMPILER)
+        execute_process(
+            COMMAND ${MPI_CXX_COMPILER} --showme:incdirs
+            OUTPUT_VARIABLE MPI_SHOWME_INCDIRS
+            OUTPUT_STRIP_TRAILING_WHITESPACE)
+        if(MPI_SHOWME_INCDIRS)
+            separate_arguments(MPI_SHOWME_INCDIRS UNIX_COMMAND "${MPI_SHOWME_INCDIRS}")
+            set(MPI_CXX_INCLUDE_DIRS_LOCAL "${MPI_SHOWME_INCDIRS}")
+        endif()
+    endif()
 endif()
 FetchContent_MakeAvailable(amrex)
 
