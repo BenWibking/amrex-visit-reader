@@ -305,7 +305,11 @@ public:
     if (refCount_ == 0) {
       int argc = 0;
       char **argv = nullptr;
+#ifdef AMREX_USE_MPI
+      amrex::Initialize(argc, argv, false, MPI_COMM_WORLD);
+#else
       amrex::Initialize(argc, argv, false);
+#endif
       initialized_ = true;
     }
     ++refCount_;
