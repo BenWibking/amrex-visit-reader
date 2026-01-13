@@ -9,6 +9,7 @@ endif()
 
 SET(VISIT_PLUGIN_DIR "$ENV{HOME}/.visit/3.4.2/linux-x86_64/plugins" CACHE PATH
     "Directory where VisIt installs database plugins.")
+set(VISIT_DATABASE_PLUGIN_DIR "${VISIT_PLUGIN_DIR}/databases")
 SET(VISIT_PLUGIN_VS_INSTALL_FILE "/sw/andes/visit/3.4.2/linux-x86_64/include/PluginVsInstall.cmake"
     CACHE FILEPATH "Path to PluginVsInstall.cmake from the VisIt installation.")
 SET(VISIT_LIBRARY_DEPENDENCIES_FILE "${CMAKE_CURRENT_LIST_DIR}/VisItLibraryDependencies.cmake"
@@ -20,6 +21,9 @@ PROJECT(amrex_database)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_BUILD_RPATH_USE_ORIGIN ON)
+set(CMAKE_INSTALL_RPATH "$ORIGIN")
+set(CMAKE_INSTALL_RPATH_USE_LINK_PATH OFF)
 
 include(FetchContent)
 
@@ -156,3 +160,4 @@ IF(VISIT_PARALLEL)
 ENDIF(VISIT_PARALLEL)
 
 VISIT_INSTALL_DATABASE_PLUGINS(${INSTALLTARGETS})
+install(FILES $<TARGET_FILE:AMReX::amrex> DESTINATION "${VISIT_DATABASE_PLUGIN_DIR}")
