@@ -2,6 +2,7 @@ VisItLibraryDependencies.cmake
 build/
 .cache/
 compile_commands.json
+*.tar.gz
 *.h5
 *.bp
 *.session
