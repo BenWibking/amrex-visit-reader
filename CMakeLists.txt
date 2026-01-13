@@ -124,6 +124,12 @@ FetchContent_Declare(
     GIT_TAG ${AMREX_GIT_TAG}
     GIT_SHALLOW TRUE
 )
+if(NOT VISIT_USE_VENDORED_MPICH)
+    find_package(MPI REQUIRED)
+    if(MPI_CXX_INCLUDE_DIRS)
+        include_directories(BEFORE ${MPI_CXX_INCLUDE_DIRS})
+    endif()
+endif()
 FetchContent_MakeAvailable(amrex)
 get_target_property(AMREX_INTERFACE_INCLUDE_DIRS AMReX::amrex INTERFACE_INCLUDE_DIRECTORIES)
 if(AMREX_INTERFACE_INCLUDE_DIRS)
