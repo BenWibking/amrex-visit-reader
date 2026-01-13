@@ -15,7 +15,12 @@
 #include <cstdint>
 #include <csignal>
 #include <cstring>
-#include <filesystem>
+#include <cerrno>
+#ifndef _WIN32
+#include <dirent.h>
+#else
+#include <windows.h>
+#endif
 #include <functional>
 #include <iostream>
 #include <limits>
@@ -26,6 +31,7 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <avtDatabaseMetaData.h>
@@ -616,6 +622,71 @@ inline bool EndsWithSeparator(const std::string &path) {
   return last == '/' || last == '\\';
 }
 
+inline std::string TrimTrailingSeparators(const std::string &path) {
+  if (path.empty()) {
+    return path;
+  }
+  size_t end = path.size();
+  while (end > 1 && IsSeparator(path[end - 1])) {
+#ifdef _WIN32
+    if (end == 3 && std::isalpha(static_cast<unsigned char>(path[0])) &&
+        path[1] == ':' && IsSeparator(path[2])) {
+      break;
+    }
+#endif
+    --end;
+  }
+  return path.substr(0, end);
+}
+
+inline std::string StripLeadingSeparators(const std::string &path) {
+  size_t start = 0;
+  while (start < path.size() && IsSeparator(path[start])) {
+    ++start;
+  }
+  return path.substr(start);
+}
+
+inline std::string Basename(const std::string &path) {
+  if (path.empty()) {
+    return "";
+  }
+  size_t end = path.size();
+  while (end > 0 && IsSeparator(path[end - 1])) {
+    --end;
+  }
+  if (end == 0) {
+    return "";
+  }
+  const size_t pos = path.find_last_of("/\\", end - 1);
+  if (pos == std::string::npos) {
+    return path.substr(0, end);
+  }
+  return path.substr(pos + 1, end - pos - 1);
+}
+
+inline std::string Stem(const std::string &path) {
+  std::string base = Basename(path);
+  if (base.empty()) {
+    return base;
+  }
+  const size_t dot = base.find_last_of('.');
+  if (dot == std::string::npos || dot == 0) {
+    return base;
+  }
+  return base.substr(0, dot);
+}
+
+inline bool PathExists(const std::string &path) {
+#ifdef _WIN32
+  struct _stat st;
+  return _stat(path.c_str(), &st) == 0;
+#else
+  struct stat st;
+  return stat(path.c_str(), &st) == 0;
+#endif
+}
+
 inline std::string JoinPath(const std::string &parent,
                             const std::string &child) {
   if (child.empty()) {
@@ -641,6 +712,53 @@ inline std::string JoinPath(const std::string &parent,
   return result;
 }
 
+inline bool ListDirectoryEntries(const std::string &path,
+                                 std::vector<std::string> &entries,
+                                 std::string &error) {
+  entries.clear();
+#ifdef _WIN32
+  std::string pattern = JoinPath(path, "*");
+  WIN32_FIND_DATAA data;
+  HANDLE handle = FindFirstFileA(pattern.c_str(), &data);
+  if (handle == INVALID_HANDLE_VALUE) {
+    error = "Failed to list directory '" + path + "'.";
+    return false;
+  }
+  do {
+    std::string name = data.cFileName;
+    if (name == "." || name == "..") {
+      continue;
+    }
+    entries.push_back(name);
+  } while (FindNextFileA(handle, &data));
+  FindClose(handle);
+  return true;
+#else
+  errno = 0;
+  DIR *dir = opendir(path.c_str());
+  if (dir == nullptr) {
+    error = "Failed to list directory '" + path + "': " +
+            std::string(std::strerror(errno));
+    return false;
+  }
+  while (dirent *entry = readdir(dir)) {
+    std::string name = entry->d_name;
+    if (name == "." || name == "..") {
+      continue;
+    }
+    entries.push_back(name);
+  }
+  int saved_errno = errno;
+  closedir(dir);
+  if (saved_errno != 0) {
+    error = "Failed to list directory '" + path + "': " +
+            std::string(std::strerror(saved_errno));
+    return false;
+  }
+  return true;
+#endif
+}
+
 } // namespace
 
 std::vector<std::pair<unsigned long long, std::string>>
@@ -651,8 +769,7 @@ avtamrexFileFormat::ResolveDescriptorPaths(const std::string &descriptorPath,
   PathPattern pattern = ParsePattern(fullPath);
 
   auto pushSingle = [&](const std::string &path) {
-    std::filesystem::path candidate(path);
-    if (!std::filesystem::exists(candidate)) {
+    if (!PathExists(path)) {
       std::ostringstream oss;
       oss << "Plotfile '" << path << "' referenced by '" << descriptorPath
           << "' does not exist.";
@@ -660,7 +777,7 @@ avtamrexFileFormat::ResolveDescriptorPaths(const std::string &descriptorPath,
       EXCEPTION1(InvalidFilesException, oss.str().c_str());
     }
     matches.emplace_back(static_cast<unsigned long long>(matches.size()),
-                         candidate.string());
+                         path);
   };
 
   if (!pattern.hasPattern) {
@@ -668,31 +785,27 @@ avtamrexFileFormat::ResolveDescriptorPaths(const std::string &descriptorPath,
     return matches;
   }
 
-  std::filesystem::path prefixPath(pattern.prefix);
-  std::filesystem::path basePath = prefixPath.parent_path();
-  std::string baseDir = basePath.empty() ? prefixPath.root_path().string()
-                                         : basePath.string();
+  std::string baseDir = ParentDirectory(pattern.prefix);
   if (baseDir.empty()) {
     baseDir = ".";
   }
 
   std::string prefixString = pattern.prefix;
   if (!prefixString.empty() && IsSeparator(prefixString.back())) {
-    prefixString.pop_back();
-    baseDir = prefixString;
+    prefixString = TrimTrailingSeparators(prefixString);
+    baseDir = prefixString.empty() ? "." : prefixString;
   }
 
-  std::error_code ec;
-  std::filesystem::directory_iterator dirIt(baseDir, ec);
-  if (ec) {
-    std::ostringstream oss;
-    oss << "Failed to list directory '" << baseDir << "': " << ec.message();
-    debug1 << "[amrex-plugin] " << oss.str() << "\n";
-    EXCEPTION1(InvalidFilesException, oss.str().c_str());
+  std::vector<std::string> dirEntries;
+  std::string listError;
+  if (!ListDirectoryEntries(baseDir, dirEntries, listError)) {
+    debug1 << "[amrex-plugin] " << listError << "\n";
+    EXCEPTION1(InvalidFilesException, listError.c_str());
   }
 
-  for (const auto &entry : dirIt) {
-    std::string entryPathStr = entry.path().string();
+  std::string baseDirForJoin = baseDir == "." ? "" : baseDir;
+  for (const auto &entryName : dirEntries) {
+    std::string entryPathStr = JoinPath(baseDirForJoin, entryName);
     if (entryPathStr.rfind(pattern.prefix, 0) != 0) {
       continue;
     }
@@ -721,14 +834,13 @@ avtamrexFileFormat::ResolveDescriptorPaths(const std::string &descriptorPath,
     }
 
     std::string trailing = remainder.substr(idx);
-    std::filesystem::path candidate = entry.path();
+    std::string candidate = entryPathStr;
     if (!pattern.suffix.empty()) {
       if (IsSeparator(pattern.suffix.front())) {
         if (!trailing.empty()) {
           continue;
         }
-        std::filesystem::path extra(pattern.suffix);
-        candidate /= extra.relative_path();
+        candidate = JoinPath(candidate, StripLeadingSeparators(pattern.suffix));
       } else {
         if (trailing != pattern.suffix) {
           continue;
@@ -738,7 +850,7 @@ avtamrexFileFormat::ResolveDescriptorPaths(const std::string &descriptorPath,
       continue;
     }
 
-    if (!std::filesystem::exists(candidate)) {
+    if (!PathExists(candidate)) {
       continue;
     }
 
@@ -749,7 +861,7 @@ avtamrexFileFormat::ResolveDescriptorPaths(const std::string &descriptorPath,
       continue;
     }
 
-    matches.emplace_back(iterValue, candidate.string());
+    matches.emplace_back(iterValue, candidate);
   }
 
   std::sort(matches.begin(), matches.end(),
@@ -765,8 +877,7 @@ avtamrexFileFormat::ResolveDescriptorPaths(const std::string &descriptorPath,
 
 std::string avtamrexFileFormat::MakeDefaultMeshName(
     const std::string &path) const {
-  std::filesystem::path p(path);
-  std::string stem = p.stem().string();
+  std::string stem = Stem(path);
   if (stem.empty()) {
     return "amrex_mesh";
   }
