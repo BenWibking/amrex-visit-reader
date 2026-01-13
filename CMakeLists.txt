@@ -57,6 +57,14 @@ function(configure_amrex_plugin target_name)
     target_include_directories(${target_name} PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${VISIT_DATABASE_INCLUDES_CLEAN})
+    if(NOT VISIT_USE_VENDORED_MPICH)
+        get_target_property(_amrex_plugin_includes ${target_name} INCLUDE_DIRECTORIES)
+        if(_amrex_plugin_includes)
+            list(FILTER _amrex_plugin_includes EXCLUDE REGEX "[Mm]pich")
+            set_property(TARGET ${target_name} PROPERTY INCLUDE_DIRECTORIES "${_amrex_plugin_includes}")
+        endif()
+        unset(_amrex_plugin_includes)
+    endif()
 endfunction()
 
 SET(LIBI_SOURCES
