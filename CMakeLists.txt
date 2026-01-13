@@ -47,9 +47,9 @@ function(configure_amrex_plugin target_name)
     target_include_directories(${target_name} PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${VISIT_DATABASE_INCLUDES_CLEAN})
-    if(NOT VISIT_USE_VENDORED_MPICH AND MPI_CXX_INCLUDE_DIRS)
+    if(NOT VISIT_USE_VENDORED_MPICH AND MPI_CXX_INCLUDE_DIRS_LOCAL)
         target_include_directories(${target_name} SYSTEM BEFORE PRIVATE
-            ${MPI_CXX_INCLUDE_DIRS})
+            ${MPI_CXX_INCLUDE_DIRS_LOCAL})
     endif()
 endfunction()
 
@@ -139,6 +139,14 @@ FetchContent_Declare(
 )
 if(NOT VISIT_USE_VENDORED_MPICH)
     find_package(MPI REQUIRED)
+    set(MPI_CXX_INCLUDE_DIRS_LOCAL "")
+    if(MPI_CXX_INCLUDE_DIRS)
+        set(MPI_CXX_INCLUDE_DIRS_LOCAL "${MPI_CXX_INCLUDE_DIRS}")
+    elseif(MPI_CXX_COMPILER_INCLUDE_DIRS)
+        set(MPI_CXX_INCLUDE_DIRS_LOCAL "${MPI_CXX_COMPILER_INCLUDE_DIRS}")
+    elseif(MPI_CXX_INCLUDE_PATH)
+        set(MPI_CXX_INCLUDE_DIRS_LOCAL "${MPI_CXX_INCLUDE_PATH}")
+    endif()
 endif()
 FetchContent_MakeAvailable(amrex)
 
