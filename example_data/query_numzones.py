@@ -1,4 +1,8 @@
-OpenDatabase("/Users/benwibking/amrex-visit-plugin/example_data/bp5_2d.amrex")
+import os
+
+script_dir = os.path.abspath(os.path.dirname(__file__))
+dataset = os.path.join(script_dir, "Nyx_LyA", "plt00000")
+OpenDatabase(dataset, 0, "amrex-plotfile")
 AddPlot("Pseudocolor", "gasDensity")
 DrawPlots()
 Query("NumZones")

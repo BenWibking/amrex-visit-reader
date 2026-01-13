@@ -119,7 +119,8 @@ std::vector<std::string>
 amrexGeneralPluginInfo::GetDefaultFilePatterns() const
 {
     std::vector<std::string> defaultPatterns;
-    defaultPatterns.push_back("*.amrex");
+    defaultPatterns.push_back("plt*/Header");
+    defaultPatterns.push_back("plt*");
 
     return defaultPatterns;
 }
@@ -155,5 +156,5 @@ amrexGeneralPluginInfo::AreDefaultFilePatternsStrict() const
 bool
 amrexGeneralPluginInfo::OpensWholeDirectory() const
 {
-    return false;
+    return true;
 }

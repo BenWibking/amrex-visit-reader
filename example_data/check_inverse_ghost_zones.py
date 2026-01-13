@@ -4,7 +4,7 @@ VisIt CLI helper that loads an example AMReX dataset, applies the
 Inverse Ghost Zone filter, and verifies that valid zones remain.
 
 Run with: `visit -cli -s example_data/check_inverse_ghost_zones.py`
-Optionally pass a different .amrex file as the first argument.
+Optionally pass a different plotfile directory as the first argument.
 """
 
 import os
@@ -14,13 +14,13 @@ import sys
 def resolve_dataset_path():
     """Return the dataset path from argv or fall back to the default 3D sample."""
     script_dir = os.path.abspath(os.path.dirname(__file__))
-    default_dataset = os.path.join(script_dir, "hdf5_3d.amrex")
+    default_dataset = os.path.join(script_dir, "Nyx_LyA", "plt00000")
     dataset = default_dataset
     if len(sys.argv) > 1:
         dataset = sys.argv[1]
     dataset = os.path.abspath(dataset)
-    if not os.path.exists(dataset):
-        raise RuntimeError(f"Dataset '{dataset}' does not exist")
+    if not os.path.isdir(dataset):
+        raise RuntimeError(f"Dataset '{dataset}' does not exist or is not a directory")
     return dataset
 
 
@@ -53,7 +53,7 @@ def query_value(query_name, variable=None):
 def main():
     dataset = resolve_dataset_path()
     print(f"Opening dataset: {dataset}")
-    OpenDatabase(dataset)
+    OpenDatabase(dataset, 0, "amrex-plotfile")
 
     # Choose a representative scalar variable. The default example contains 'gasDensity'.
     scalar_var = "gasDensity"

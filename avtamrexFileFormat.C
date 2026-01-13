@@ -687,6 +687,22 @@ inline bool PathExists(const std::string &path) {
 #endif
 }
 
+inline bool PathIsDirectory(const std::string &path) {
+#ifdef _WIN32
+  struct _stat st;
+  if (_stat(path.c_str(), &st) != 0) {
+    return false;
+  }
+  return (st.st_mode & _S_IFDIR) != 0;
+#else
+  struct stat st;
+  if (stat(path.c_str(), &st) != 0) {
+    return false;
+  }
+  return S_ISDIR(st.st_mode);
+#endif
+}
+
 inline std::string JoinPath(const std::string &parent,
                             const std::string &child) {
   if (child.empty()) {
@@ -710,6 +726,33 @@ inline std::string JoinPath(const std::string &parent,
   }
   result += child;
   return result;
+}
+
+inline bool ParsePlotfileDirectoryName(const std::string &name,
+                                       unsigned long long &iteration) {
+  if (name.size() < 4) {
+    return false;
+  }
+  if (name.rfind("plt", 0) != 0) {
+    return false;
+  }
+
+  std::string digits = name.substr(3);
+  if (digits.empty()) {
+    return false;
+  }
+  for (char c : digits) {
+    if (!std::isdigit(static_cast<unsigned char>(c))) {
+      return false;
+    }
+  }
+
+  try {
+    iteration = static_cast<unsigned long long>(std::stoll(digits));
+  } catch (std::exception const &) {
+    return false;
+  }
+  return true;
 }
 
 inline bool ListDirectoryEntries(const std::string &path,
@@ -903,55 +946,93 @@ avtamrexFileFormat::avtamrexFileFormat(const char *filename)
     : avtMTMDFileFormat(filename) {
   InstallSegfaultTraceHandler();
   AmrexRuntime::Retain();
-  debug1 << "[amrex-plugin] Constructing reader for descriptor '" << filename
+  debug1 << "[amrex-plugin] Constructing reader for plotfile '" << filename
          << "'\n";
 
-  std::ifstream file(filename);
-  if (!file.is_open()) {
+  std::string requestedPath = TrimTrailingSeparators(filename);
+  if (requestedPath.empty()) {
+    requestedPath = filename;
+  }
+  if (!PathExists(requestedPath)) {
     std::ostringstream oss;
-    oss << "Failed to open descriptor file '" << filename << "'";
+    oss << "Plotfile '" << filename << "' does not exist.";
     debug1 << "[amrex-plugin] " << oss.str() << "\n";
     EXCEPTION1(InvalidFilesException, oss.str().c_str());
   }
 
-  std::string descriptorLine;
-  if (!std::getline(file, descriptorLine)) {
-    std::ostringstream oss;
-    oss << "Descriptor '" << filename << "' is missing the plotfile path.";
-    debug1 << "[amrex-plugin] " << oss.str() << "\n";
-    EXCEPTION1(InvalidFilesException, oss.str().c_str());
+  if (!PathIsDirectory(requestedPath)) {
+    const std::string baseName = Basename(requestedPath);
+    if (baseName == "Header") {
+      std::string parentPath = ParentDirectory(requestedPath);
+      if (parentPath.empty() || !PathIsDirectory(parentPath)) {
+        std::ostringstream oss;
+        oss << "Plotfile header '" << filename
+            << "' does not reside in a plotfile directory.";
+        debug1 << "[amrex-plugin] " << oss.str() << "\n";
+        EXCEPTION1(InvalidFilesException, oss.str().c_str());
+      }
+      requestedPath = parentPath;
+    } else {
+      std::ostringstream oss;
+      oss << "Plotfile '" << filename
+          << "' is not a plotfile directory or Header file.";
+      debug1 << "[amrex-plugin] " << oss.str() << "\n";
+      EXCEPTION1(InvalidFilesException, oss.str().c_str());
+    }
   }
-  auto firstNonSpace = descriptorLine.find_first_not_of(" \t\r");
-  if (firstNonSpace == std::string::npos) {
-    descriptorLine.clear();
-  } else {
-    auto lastNonSpace = descriptorLine.find_last_not_of(" \t\r");
-    descriptorLine =
-        descriptorLine.substr(firstNonSpace, lastNonSpace - firstNonSpace + 1);
-  }
-  if (descriptorLine.empty()) {
+
+  const std::string baseName = Basename(requestedPath);
+  unsigned long long requestedIter = 0;
+  if (!ParsePlotfileDirectoryName(baseName, requestedIter)) {
     std::ostringstream oss;
-    oss << "Descriptor '" << filename << "' is missing the plotfile path.";
+    oss << "Plotfile '" << filename
+        << "' does not match the expected plt[0-9]* naming.";
     debug1 << "[amrex-plugin] " << oss.str() << "\n";
     EXCEPTION1(InvalidFilesException, oss.str().c_str());
   }
 
-  // Consume optional override lines for compatibility, even though the AMReX
-  // reader does not currently honor them.
-  std::string unusedLine;
-  std::getline(file, unusedLine);
-  std::getline(file, unusedLine);
-  std::getline(file, unusedLine);
-  file.close();
+  std::string baseDir = ParentDirectory(requestedPath);
+  if (baseDir.empty()) {
+    baseDir = ".";
+  }
 
-  std::string descriptorPath(filename);
-  auto matches = ResolveDescriptorPaths(descriptorPath, descriptorLine);
+  std::vector<std::string> dirEntries;
+  std::string listError;
+  if (!ListDirectoryEntries(baseDir, dirEntries, listError)) {
+    debug1 << "[amrex-plugin] " << listError << "\n";
+    EXCEPTION1(InvalidFilesException, listError.c_str());
+  }
+
+  std::vector<std::pair<unsigned long long, std::string>> matches;
+  std::string baseDirForJoin = baseDir == "." ? "" : baseDir;
+  for (const auto &entryName : dirEntries) {
+    unsigned long long iterValue = 0;
+    if (!ParsePlotfileDirectoryName(entryName, iterValue)) {
+      continue;
+    }
+
+    std::string entryPath = JoinPath(baseDirForJoin, entryName);
+    if (!PathIsDirectory(entryPath)) {
+      continue;
+    }
+    matches.emplace_back(iterValue, entryPath);
+  }
+
   if (matches.empty()) {
     std::ostringstream oss;
-    oss << "Descriptor '" << filename << "' did not resolve any plotfiles.";
+    oss << "No plotfile directories matching plt[0-9]* found in '"
+        << baseDir << "'.";
     debug1 << "[amrex-plugin] " << oss.str() << "\n";
     EXCEPTION1(InvalidFilesException, oss.str().c_str());
   }
+
+  std::sort(matches.begin(), matches.end(),
+            [](const auto &lhs, const auto &rhs) {
+              if (lhs.first != rhs.first) {
+                return lhs.first < rhs.first;
+              }
+              return lhs.second < rhs.second;
+            });
 
   plotfilePaths_.reserve(matches.size());
   iterationIndex_.reserve(matches.size());
@@ -965,7 +1046,7 @@ avtamrexFileFormat::avtamrexFileFormat(const char *filename)
   plotfileCache_.resize(numTimesteps);
   timeValues_.assign(numTimesteps, std::numeric_limits<double>::quiet_NaN());
 
-  debug1 << "[amrex-plugin] Constructor ready. descriptor='" << filename
+  debug1 << "[amrex-plugin] Constructor ready. plotfile='" << filename
          << "' timesteps=" << numTimesteps << "\n";
 }
 

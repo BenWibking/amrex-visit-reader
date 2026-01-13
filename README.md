@@ -50,5 +50,5 @@ Unplanned:
    ./extract_example_data.sh
    ```
 
-2. Load any of the `*.amrex` files in the `example_data/` directory in VisIt (clicking `Open` in the main window). Each descriptor line points to an AMReX plotfile (or a pattern such as `plt%05T`) relative to the descriptor.
+2. Load any `plt[0-9]*` plotfile directory in the `example_data/` directory in VisIt (clicking `Open` in the main window). The plugin scans the parent directory for sibling `plt*` entries and aggregates them into a time series. If the GUI doesn't allow selecting directories, choose the plotfile `Header` file (for example, `plt00000/Header`). If VisIt fails to auto-detect the reader, use `Open As...` (GUI) or `visit -o <plotfile_dir>,amrex-plotfile` on the CLI.
 3. Plot the meshes and variables exposed in VisIt to confirm AMR level decomposition and scalar/vector values look correct.
