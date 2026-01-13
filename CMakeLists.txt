@@ -40,6 +40,19 @@ amrexPluginInfo.C
 amrexCommonPluginInfo.C
 )
 
+function(configure_amrex_plugin target_name)
+    if(NOT TARGET ${target_name})
+        return()
+    endif()
+    target_include_directories(${target_name} PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${VISIT_DATABASE_INCLUDES_CLEAN})
+    if(NOT VISIT_USE_VENDORED_MPICH AND MPI_CXX_INCLUDE_DIRS)
+        target_include_directories(${target_name} SYSTEM BEFORE PRIVATE
+            ${MPI_CXX_INCLUDE_DIRS})
+    endif()
+endfunction()
+
 SET(LIBI_SOURCES
 amrexPluginInfo.C
 )
@@ -60,10 +73,6 @@ set(VISIT_DATABASE_INCLUDES_CLEAN "${VISIT_DATABASE_INCLUDES}")
 if(NOT VISIT_USE_VENDORED_MPICH)
     list(FILTER VISIT_DATABASE_INCLUDES_CLEAN EXCLUDE REGEX "mpich")
 endif()
-INCLUDE_DIRECTORIES(
-${CMAKE_CURRENT_SOURCE_DIR}
-${VISIT_DATABASE_INCLUDES_CLEAN}
-)
 
 LINK_DIRECTORIES(${VISIT_LIBRARY_DIR})
 
@@ -130,15 +139,8 @@ FetchContent_Declare(
 )
 if(NOT VISIT_USE_VENDORED_MPICH)
     find_package(MPI REQUIRED)
-    if(MPI_CXX_INCLUDE_DIRS)
-        include_directories(BEFORE ${MPI_CXX_INCLUDE_DIRS})
-    endif()
 endif()
 FetchContent_MakeAvailable(amrex)
-get_target_property(AMREX_INTERFACE_INCLUDE_DIRS AMReX::amrex INTERFACE_INCLUDE_DIRECTORIES)
-if(AMREX_INTERFACE_INCLUDE_DIRS)
-    include_directories(BEFORE ${AMREX_INTERFACE_INCLUDE_DIRS})
-endif()
 
 set(CPPTRACE_BUILD_TESTING OFF CACHE BOOL "" FORCE)
 set(CPPTRACE_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
@@ -153,23 +155,27 @@ add_subdirectory(${amrex_database_SOURCE_DIR}/extern/cpptrace ${amrex_database_B
 
 ADD_LIBRARY(IamrexDatabase ${LIBI_SOURCES})
 TARGET_LINK_LIBRARIES(IamrexDatabase visitcommon AMReX::amrex cpptrace::cpptrace)
+configure_amrex_plugin(IamrexDatabase)
 SET(INSTALLTARGETS IamrexDatabase)
 
 IF(NOT VISIT_ENGINE_ONLY AND NOT VISIT_DBIO_ONLY)
     ADD_LIBRARY(MamrexDatabase ${LIBM_SOURCES})
     TARGET_LINK_LIBRARIES(MamrexDatabase visitcommon avtdbatts avtdatabase_ser AMReX::amrex cpptrace::cpptrace)
+    configure_amrex_plugin(MamrexDatabase)
     ADD_TARGET_DEFINITIONS(MamrexDatabase MDSERVER)
     SET(INSTALLTARGETS ${INSTALLTARGETS} MamrexDatabase)
 ENDIF(NOT VISIT_ENGINE_ONLY AND NOT VISIT_DBIO_ONLY)
 
 ADD_LIBRARY(EamrexDatabase_ser ${LIBE_SOURCES})
 TARGET_LINK_LIBRARIES(EamrexDatabase_ser visitcommon avtpipeline_ser avtdatabase_ser AMReX::amrex cpptrace::cpptrace)
+configure_amrex_plugin(EamrexDatabase_ser)
 ADD_TARGET_DEFINITIONS(EamrexDatabase_ser ENGINE)
 SET(INSTALLTARGETS ${INSTALLTARGETS} EamrexDatabase_ser)
 
 IF(VISIT_PARALLEL)
     ADD_PARALLEL_LIBRARY(EamrexDatabase_par ${LIBE_SOURCES})
     TARGET_LINK_LIBRARIES(EamrexDatabase_par visitcommon avtpipeline_par avtdatabase_par AMReX::amrex cpptrace::cpptrace)
+    configure_amrex_plugin(EamrexDatabase_par)
     ADD_TARGET_DEFINITIONS(EamrexDatabase_par ENGINE)
     SET(INSTALLTARGETS ${INSTALLTARGETS} EamrexDatabase_par)
 ENDIF(VISIT_PARALLEL)
