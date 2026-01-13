@@ -17,6 +17,18 @@ SET(VISIT_LIBRARY_DEPENDENCIES_FILE "${CMAKE_CURRENT_LIST_DIR}/VisItLibraryDepen
 INCLUDE("${VISIT_PLUGIN_VS_INSTALL_FILE}")
 INCLUDE("${VISIT_LIBRARY_DEPENDENCIES_FILE}")
 
+# Strip MPICH include flags injected by VisIt when not using vendored MPICH.
+if(NOT VISIT_USE_VENDORED_MPICH)
+    foreach(_flag_var IN ITEMS CMAKE_C_FLAGS CMAKE_CXX_FLAGS)
+        if(DEFINED ${_flag_var})
+            string(REGEX REPLACE "(-I[^ ]*[Mm]pich[^ ]*)"
+                                 "" ${_flag_var} "${${_flag_var}}")
+            string(REGEX REPLACE "[ ]+" " " ${_flag_var} "${${_flag_var}}")
+        endif()
+    endforeach()
+    unset(_flag_var)
+endif()
+
 PROJECT(amrex_database)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
