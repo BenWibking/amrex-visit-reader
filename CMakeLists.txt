@@ -67,6 +67,52 @@ set(AMReX_LINEAR_SOLVERS OFF CACHE BOOL "" FORCE)
 set(AMReX_PARTICLES OFF CACHE BOOL "" FORCE)
 set(AMReX_FFT OFF CACHE BOOL "" FORCE)
 set(AMReX_SPACEDIM 3 CACHE STRING "" FORCE)
+
+option(VISIT_USE_VENDORED_MPICH
+    "Use VisIt-provided MPICH headers and MPI wrappers when building AMReX" ON)
+if(VISIT_USE_VENDORED_MPICH)
+    # Force AMReX to use VisIt's MPI runtime and locally-provided MPICH headers.
+    set(MPICH_HEADERS_ROOT "" CACHE PATH "Path to MPICH headers (mpi.h)")
+    set(_mpich_header_candidates
+        "${MPICH_HEADERS_ROOT}"
+        "${VISIT_ROOT_INCLUDE_DIR}/mpich/include"
+        "${CMAKE_BINARY_DIR}/_deps/mpich-install/include"
+    )
+    set(MPICH_INCLUDE_DIR "")
+    foreach(_mpich_candidate IN LISTS _mpich_header_candidates)
+        if(_mpich_candidate AND EXISTS "${_mpich_candidate}/mpi.h")
+            set(MPICH_INCLUDE_DIR "${_mpich_candidate}")
+            break()
+        endif()
+    endforeach()
+    if(NOT MPICH_INCLUDE_DIR)
+        message(FATAL_ERROR
+            "MPICH headers (mpi.h) not found. Set MPICH_HEADERS_ROOT or run "
+            "example_data/fetch_mpich_headers.sh to populate "
+            "${CMAKE_BINARY_DIR}/_deps/mpich-install/include.")
+    endif()
+    unset(_mpich_candidate)
+    unset(_mpich_header_candidates)
+
+    set(MPI_C_COMPILER "${VISIT_BINARY_DIR}/mpicc" CACHE FILEPATH "" FORCE)
+    set(MPI_CXX_COMPILER "${VISIT_BINARY_DIR}/mpicxx" CACHE FILEPATH "" FORCE)
+    set(MPIEXEC_EXECUTABLE "${VISIT_BINARY_DIR}/mpiexec" CACHE FILEPATH "" FORCE)
+    set(MPI_C_COMPILER_INCLUDE_DIRS "${MPICH_INCLUDE_DIR}" CACHE STRING "" FORCE)
+    set(MPI_CXX_COMPILER_INCLUDE_DIRS "${MPICH_INCLUDE_DIR}" CACHE STRING "" FORCE)
+    set(MPI_C_ADDITIONAL_INCLUDE_DIRS "${MPICH_INCLUDE_DIR}" CACHE STRING "" FORCE)
+    set(MPI_CXX_ADDITIONAL_INCLUDE_DIRS "${MPICH_INCLUDE_DIR}" CACHE STRING "" FORCE)
+    set(MPI_C_LIB_NAMES "mpi;pmpi" CACHE STRING "" FORCE)
+    set(MPI_CXX_LIB_NAMES "mpi;pmpi" CACHE STRING "" FORCE)
+    set(MPI_mpi_LIBRARY "${VISIT_LIBRARY_DIR}/libmpi.dylib" CACHE FILEPATH "" FORCE)
+    set(MPI_pmpi_LIBRARY "${VISIT_LIBRARY_DIR}/libpmpi.dylib" CACHE FILEPATH "" FORCE)
+    set(MPI_C_LIBRARIES
+        "${VISIT_LIBRARY_DIR}/libmpi.dylib;${VISIT_LIBRARY_DIR}/libpmpi.dylib"
+        CACHE STRING "" FORCE)
+    set(MPI_CXX_LIBRARIES
+        "${VISIT_LIBRARY_DIR}/libmpi.dylib;${VISIT_LIBRARY_DIR}/libpmpi.dylib"
+        CACHE STRING "" FORCE)
+endif()
+
 FetchContent_Declare(
     amrex
     GIT_REPOSITORY https://github.com/AMReX-Codes/amrex.git
