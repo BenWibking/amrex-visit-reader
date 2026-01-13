@@ -44,13 +44,13 @@ function(configure_amrex_plugin target_name)
     if(NOT TARGET ${target_name})
         return()
     endif()
+    if(NOT VISIT_USE_VENDORED_MPICH AND MPI_CXX_INCLUDE_DIRS_LOCAL)
+        target_include_directories(${target_name} SYSTEM PRIVATE
+            ${MPI_CXX_INCLUDE_DIRS_LOCAL})
+    endif()
     target_include_directories(${target_name} PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${VISIT_DATABASE_INCLUDES_CLEAN})
-    if(NOT VISIT_USE_VENDORED_MPICH AND MPI_CXX_INCLUDE_DIRS_LOCAL)
-        target_include_directories(${target_name} SYSTEM BEFORE PRIVATE
-            ${MPI_CXX_INCLUDE_DIRS_LOCAL})
-    endif()
 endfunction()
 
 SET(LIBI_SOURCES
@@ -68,11 +68,6 @@ amrexEnginePluginInfo.C
 ${COMMON_SOURCES}
 avtamrexFileFormat.C
 )
-
-set(VISIT_DATABASE_INCLUDES_CLEAN "${VISIT_DATABASE_INCLUDES}")
-if(NOT VISIT_USE_VENDORED_MPICH)
-    list(FILTER VISIT_DATABASE_INCLUDES_CLEAN EXCLUDE REGEX "mpich")
-endif()
 
 LINK_DIRECTORIES(${VISIT_LIBRARY_DIR})
 
@@ -129,6 +124,11 @@ if(VISIT_USE_VENDORED_MPICH)
     set(MPI_CXX_LIBRARIES
         "${VISIT_LIBRARY_DIR}/libmpi.dylib;${VISIT_LIBRARY_DIR}/libpmpi.dylib"
         CACHE STRING "" FORCE)
+endif()
+
+set(VISIT_DATABASE_INCLUDES_CLEAN "${VISIT_DATABASE_INCLUDES}")
+if(NOT VISIT_USE_VENDORED_MPICH)
+    list(FILTER VISIT_DATABASE_INCLUDES_CLEAN EXCLUDE REGEX "[Mm]pich")
 endif()
 
 FetchContent_Declare(
