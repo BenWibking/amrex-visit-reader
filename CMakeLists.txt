@@ -157,6 +157,11 @@ if(NOT VISIT_USE_VENDORED_MPICH)
             set(MPI_CXX_INCLUDE_DIRS_LOCAL "${MPI_SHOWME_INCDIRS}")
         endif()
     endif()
+    if(NOT MPI_CXX_INCLUDE_DIRS_LOCAL)
+        message(FATAL_ERROR
+            "OpenMPI include dirs not found; set MPI_CXX_INCLUDE_DIRS to the "
+            "OpenMPI include path so the plugin does not pick up MPICH headers.")
+    endif()
 endif()
 FetchContent_MakeAvailable(amrex)
 

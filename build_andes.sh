@@ -13,9 +13,12 @@ if [[ -z "$MPI_C_COMPILER" || -z "$MPI_CXX_COMPILER" || -z "$MPIEXEC_EXECUTABLE"
   echo "OpenMPI wrappers not found in PATH; load the VisIt/OpenMPI module." >&2
   exit 1
 fi
+export CC="${MPI_C_COMPILER}"
+export CXX="${MPI_CXX_COMPILER}"
+MPI_CXX_INCDIRS=$("${MPI_CXX_COMPILER}" --showme:incdirs 2>/dev/null | tr ' ' '\n' | sed 's/^-I//' | paste -sd ';' -)
 cmake -S . -B build -DVISIT_USE_VENDORED_MPICH=OFF -DAMReX_PIC=ON -DAMReX_BUILD_SHARED_LIBS=ON \
   -DMPI_C_COMPILER="${MPI_C_COMPILER}" -DMPI_CXX_COMPILER="${MPI_CXX_COMPILER}" \
-  -DMPIEXEC_EXECUTABLE="${MPIEXEC_EXECUTABLE}" $1
+  -DMPIEXEC_EXECUTABLE="${MPIEXEC_EXECUTABLE}" -DMPI_CXX_INCLUDE_DIRS="${MPI_CXX_INCDIRS}" $1
 cmake --build build -j16
 
 # the plugin should actually be installed to ~/.visit in the build step
