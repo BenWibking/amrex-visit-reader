@@ -17,18 +17,6 @@ SET(VISIT_LIBRARY_DEPENDENCIES_FILE "${CMAKE_CURRENT_LIST_DIR}/VisItLibraryDepen
 INCLUDE("${VISIT_PLUGIN_VS_INSTALL_FILE}")
 INCLUDE("${VISIT_LIBRARY_DEPENDENCIES_FILE}")
 
-# Strip MPICH include flags injected by VisIt when not using vendored MPICH.
-if(NOT VISIT_USE_VENDORED_MPICH)
-    foreach(_flag_var IN ITEMS CMAKE_C_FLAGS CMAKE_CXX_FLAGS)
-        if(DEFINED ${_flag_var})
-            string(REGEX REPLACE "(-I[^ ]*[Mm]pich[^ ]*)"
-                                 "" ${_flag_var} "${${_flag_var}}")
-            string(REGEX REPLACE "[ ]+" " " ${_flag_var} "${${_flag_var}}")
-        endif()
-    endforeach()
-    unset(_flag_var)
-endif()
-
 PROJECT(amrex_database)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -56,27 +44,9 @@ function(configure_amrex_plugin target_name)
     if(NOT TARGET ${target_name})
         return()
     endif()
-    if(NOT VISIT_USE_VENDORED_MPICH AND OPENMPI_INCLUDE_DIRS)
-        foreach(_openmpi_incdir IN LISTS OPENMPI_INCLUDE_DIRS)
-            target_compile_options(${target_name} PRIVATE "SHELL:-I${_openmpi_incdir}")
-        endforeach()
-        target_include_directories(${target_name} SYSTEM BEFORE PRIVATE
-            ${OPENMPI_INCLUDE_DIRS})
-    elseif(NOT VISIT_USE_VENDORED_MPICH AND MPI_CXX_INCLUDE_DIRS_LOCAL)
-        target_include_directories(${target_name} SYSTEM PRIVATE
-            ${MPI_CXX_INCLUDE_DIRS_LOCAL})
-    endif()
     target_include_directories(${target_name} PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
-        ${VISIT_DATABASE_INCLUDES_CLEAN})
-    if(NOT VISIT_USE_VENDORED_MPICH)
-        get_target_property(_amrex_plugin_includes ${target_name} INCLUDE_DIRECTORIES)
-        if(_amrex_plugin_includes)
-            list(FILTER _amrex_plugin_includes EXCLUDE REGEX "[Mm]pich")
-            set_property(TARGET ${target_name} PROPERTY INCLUDE_DIRECTORIES "${_amrex_plugin_includes}")
-        endif()
-        unset(_amrex_plugin_includes)
-    endif()
+        ${VISIT_DATABASE_INCLUDES})
 endfunction()
 
 SET(LIBI_SOURCES
@@ -109,63 +79,51 @@ set(AMReX_SPACEDIM 3 CACHE STRING "" FORCE)
 
 option(VISIT_USE_VENDORED_MPICH
     "Use VisIt-provided MPICH headers and MPI wrappers when building AMReX" ON)
-set(OPENMPI_INCLUDE_DIRS "" CACHE STRING
-    "OpenMPI include dirs (semicolon-separated) when not using VisIt's MPICH.")
-if(VISIT_USE_VENDORED_MPICH)
-    # Force AMReX to use VisIt's MPI runtime and locally-provided MPICH headers.
-    set(MPICH_HEADERS_ROOT "" CACHE PATH "Path to MPICH headers (mpi.h)")
-    set(_mpich_header_candidates
-        "${MPICH_HEADERS_ROOT}"
-        "${VISIT_ROOT_INCLUDE_DIR}/mpich/include"
-        "${CMAKE_BINARY_DIR}/_deps/mpich-install/include"
-    )
-    set(MPICH_INCLUDE_DIR "")
-    foreach(_mpich_candidate IN LISTS _mpich_header_candidates)
-        if(_mpich_candidate AND EXISTS "${_mpich_candidate}/mpi.h")
-            set(MPICH_INCLUDE_DIR "${_mpich_candidate}")
-            break()
-        endif()
-    endforeach()
-    if(NOT MPICH_INCLUDE_DIR)
-        message(FATAL_ERROR
-            "MPICH headers (mpi.h) not found. Set MPICH_HEADERS_ROOT or run "
-            "example_data/fetch_mpich_headers.sh to populate "
-            "${CMAKE_BINARY_DIR}/_deps/mpich-install/include.")
-    endif()
-    unset(_mpich_candidate)
-    unset(_mpich_header_candidates)
-
-    set(MPI_C_COMPILER "${VISIT_BINARY_DIR}/mpicc" CACHE FILEPATH "" FORCE)
-    set(MPI_CXX_COMPILER "${VISIT_BINARY_DIR}/mpicxx" CACHE FILEPATH "" FORCE)
-    set(MPIEXEC_EXECUTABLE "${VISIT_BINARY_DIR}/mpiexec" CACHE FILEPATH "" FORCE)
-    set(MPI_C_COMPILER_INCLUDE_DIRS "${MPICH_INCLUDE_DIR}" CACHE STRING "" FORCE)
-    set(MPI_CXX_COMPILER_INCLUDE_DIRS "${MPICH_INCLUDE_DIR}" CACHE STRING "" FORCE)
-    set(MPI_C_ADDITIONAL_INCLUDE_DIRS "${MPICH_INCLUDE_DIR}" CACHE STRING "" FORCE)
-    set(MPI_CXX_ADDITIONAL_INCLUDE_DIRS "${MPICH_INCLUDE_DIR}" CACHE STRING "" FORCE)
-    set(MPI_C_LIB_NAMES "mpi;pmpi" CACHE STRING "" FORCE)
-    set(MPI_CXX_LIB_NAMES "mpi;pmpi" CACHE STRING "" FORCE)
-    set(MPI_mpi_LIBRARY "${VISIT_LIBRARY_DIR}/libmpi.dylib" CACHE FILEPATH "" FORCE)
-    set(MPI_pmpi_LIBRARY "${VISIT_LIBRARY_DIR}/libpmpi.dylib" CACHE FILEPATH "" FORCE)
-    set(MPI_C_LIBRARIES
-        "${VISIT_LIBRARY_DIR}/libmpi.dylib;${VISIT_LIBRARY_DIR}/libpmpi.dylib"
-        CACHE STRING "" FORCE)
-    set(MPI_CXX_LIBRARIES
-        "${VISIT_LIBRARY_DIR}/libmpi.dylib;${VISIT_LIBRARY_DIR}/libpmpi.dylib"
-        CACHE STRING "" FORCE)
-endif()
-
-set(VISIT_DATABASE_INCLUDES_CLEAN "${VISIT_DATABASE_INCLUDES}")
 if(NOT VISIT_USE_VENDORED_MPICH)
-    list(FILTER VISIT_DATABASE_INCLUDES_CLEAN EXCLUDE REGEX "[Mm]pich")
+    message(FATAL_ERROR
+        "OpenMPI builds are no longer supported; set VISIT_USE_VENDORED_MPICH=ON.")
 endif()
 
-if(NOT VISIT_USE_VENDORED_MPICH AND OPENMPI_INCLUDE_DIRS)
-    foreach(_openmpi_incdir IN LISTS OPENMPI_INCLUDE_DIRS)
-        set(CMAKE_C_FLAGS "-I${_openmpi_incdir} ${CMAKE_C_FLAGS}")
-        set(CMAKE_CXX_FLAGS "-I${_openmpi_incdir} ${CMAKE_CXX_FLAGS}")
-    endforeach()
-    unset(_openmpi_incdir)
+# Force AMReX to use VisIt's MPI runtime and locally-provided MPICH headers.
+set(MPICH_HEADERS_ROOT "" CACHE PATH "Path to MPICH headers (mpi.h)")
+set(_mpich_header_candidates
+    "${MPICH_HEADERS_ROOT}"
+    "${VISIT_ROOT_INCLUDE_DIR}/mpich/include"
+    "${CMAKE_BINARY_DIR}/_deps/mpich-install/include"
+)
+set(MPICH_INCLUDE_DIR "")
+foreach(_mpich_candidate IN LISTS _mpich_header_candidates)
+    if(_mpich_candidate AND EXISTS "${_mpich_candidate}/mpi.h")
+        set(MPICH_INCLUDE_DIR "${_mpich_candidate}")
+        break()
+    endif()
+endforeach()
+if(NOT MPICH_INCLUDE_DIR)
+    message(FATAL_ERROR
+        "MPICH headers (mpi.h) not found. Set MPICH_HEADERS_ROOT or run "
+        "example_data/fetch_mpich_headers.sh to populate "
+        "${CMAKE_BINARY_DIR}/_deps/mpich-install/include.")
 endif()
+unset(_mpich_candidate)
+unset(_mpich_header_candidates)
+
+set(MPI_C_COMPILER "${VISIT_BINARY_DIR}/mpicc" CACHE FILEPATH "" FORCE)
+set(MPI_CXX_COMPILER "${VISIT_BINARY_DIR}/mpicxx" CACHE FILEPATH "" FORCE)
+set(MPIEXEC_EXECUTABLE "${VISIT_BINARY_DIR}/mpiexec" CACHE FILEPATH "" FORCE)
+set(MPI_C_COMPILER_INCLUDE_DIRS "${MPICH_INCLUDE_DIR}" CACHE STRING "" FORCE)
+set(MPI_CXX_COMPILER_INCLUDE_DIRS "${MPICH_INCLUDE_DIR}" CACHE STRING "" FORCE)
+set(MPI_C_ADDITIONAL_INCLUDE_DIRS "${MPICH_INCLUDE_DIR}" CACHE STRING "" FORCE)
+set(MPI_CXX_ADDITIONAL_INCLUDE_DIRS "${MPICH_INCLUDE_DIR}" CACHE STRING "" FORCE)
+set(MPI_C_LIB_NAMES "mpi;pmpi" CACHE STRING "" FORCE)
+set(MPI_CXX_LIB_NAMES "mpi;pmpi" CACHE STRING "" FORCE)
+set(MPI_mpi_LIBRARY "${VISIT_LIBRARY_DIR}/libmpi.dylib" CACHE FILEPATH "" FORCE)
+set(MPI_pmpi_LIBRARY "${VISIT_LIBRARY_DIR}/libpmpi.dylib" CACHE FILEPATH "" FORCE)
+set(MPI_C_LIBRARIES
+    "${VISIT_LIBRARY_DIR}/libmpi.dylib;${VISIT_LIBRARY_DIR}/libpmpi.dylib"
+    CACHE STRING "" FORCE)
+set(MPI_CXX_LIBRARIES
+    "${VISIT_LIBRARY_DIR}/libmpi.dylib;${VISIT_LIBRARY_DIR}/libpmpi.dylib"
+    CACHE STRING "" FORCE)
 
 FetchContent_Declare(
     amrex
@@ -174,30 +132,8 @@ FetchContent_Declare(
     GIT_SHALLOW TRUE
 )
 if(NOT VISIT_USE_VENDORED_MPICH)
-    find_package(MPI REQUIRED)
-    set(MPI_CXX_INCLUDE_DIRS_LOCAL "")
-    if(MPI_CXX_INCLUDE_DIRS)
-        set(MPI_CXX_INCLUDE_DIRS_LOCAL "${MPI_CXX_INCLUDE_DIRS}")
-    elseif(MPI_CXX_COMPILER_INCLUDE_DIRS)
-        set(MPI_CXX_INCLUDE_DIRS_LOCAL "${MPI_CXX_COMPILER_INCLUDE_DIRS}")
-    elseif(MPI_CXX_INCLUDE_PATH)
-        set(MPI_CXX_INCLUDE_DIRS_LOCAL "${MPI_CXX_INCLUDE_PATH}")
-    endif()
-    if(NOT MPI_CXX_INCLUDE_DIRS_LOCAL AND MPI_CXX_COMPILER)
-        execute_process(
-            COMMAND ${MPI_CXX_COMPILER} --showme:incdirs
-            OUTPUT_VARIABLE MPI_SHOWME_INCDIRS
-            OUTPUT_STRIP_TRAILING_WHITESPACE)
-        if(MPI_SHOWME_INCDIRS)
-            separate_arguments(MPI_SHOWME_INCDIRS UNIX_COMMAND "${MPI_SHOWME_INCDIRS}")
-            set(MPI_CXX_INCLUDE_DIRS_LOCAL "${MPI_SHOWME_INCDIRS}")
-        endif()
-    endif()
-    if(NOT MPI_CXX_INCLUDE_DIRS_LOCAL)
-        message(FATAL_ERROR
-            "OpenMPI include dirs not found; set MPI_CXX_INCLUDE_DIRS to the "
-            "OpenMPI include path so the plugin does not pick up MPICH headers.")
-    endif()
+    message(FATAL_ERROR
+        "OpenMPI builds are no longer supported; set VISIT_USE_VENDORED_MPICH=ON.")
 endif()
 FetchContent_MakeAvailable(amrex)
 
