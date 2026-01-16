@@ -27,6 +27,8 @@ mv "${DEPS_DIR}/mpich-${MPICH_VERSION}" "${SRC_DIR}"
 
 mkdir -p "${BUILD_DIR}" "${PREFIX_DIR}"
 cd "${BUILD_DIR}"
+ac_cv_header_slurm_slurm_h=no \
+ac_cv_lib_slurm_slurm_hostlist_create=no \
 "${SRC_DIR}/configure" --prefix="${PREFIX_DIR}" --disable-fortran --disable-cxx
 
 NPROC=1
