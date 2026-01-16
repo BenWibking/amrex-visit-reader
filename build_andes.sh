@@ -6,7 +6,12 @@ module reset
 
 set -x
 
-cmake -S . -B build -DVISIT_USE_VENDORED_MPICH=ON -DAMReX_PIC=ON -DAMReX_BUILD_SHARED_LIBS=ON $1
+cmake -S . -B build \
+  -DVISIT_USE_VENDORED_MPICH=ON \
+  -DVISIT_ROOT_INCLUDE_DIR=/sw/andes/visit/3.4.2/linux-x86_64/include \
+  -DVISIT_LIBRARY_DIR=/sw/andes/visit/3.4.2/linux-x86_64/lib \
+  -DVISIT_BINARY_DIR=/sw/andes/visit/3.4.2/linux-x86_64/bin \
+  -DAMReX_PIC=ON -DAMReX_BUILD_SHARED_LIBS=ON $1
 cmake --build build -j16
 
 # the plugin should actually be installed to ~/.visit in the build step
