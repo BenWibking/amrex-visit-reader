@@ -31,7 +31,10 @@ cd "${BUILD_DIR}"
 
 NPROC=1
 if command -v sysctl >/dev/null 2>&1; then
-    NPROC="$(sysctl -n hw.ncpu)"
+    NPROC="$(sysctl -n hw.ncpu 2>/dev/null || true)"
+fi
+if [ -z "${NPROC}" ]; then
+    NPROC="$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)"
 fi
 
 make -j "${NPROC}"
