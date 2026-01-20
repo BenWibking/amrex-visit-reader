@@ -22,6 +22,7 @@
 #include <windows.h>
 #endif
 #include <functional>
+#include <fstream>
 #include <iostream>
 #include <limits>
 #include <map>
@@ -1074,6 +1075,115 @@ avtamrexFileFormat::GetPlotFile(int timeState) const {
     timeValues_[timeState] = cache->time();
   }
   return cache;
+}
+
+std::string avtamrexFileFormat::GetMultiFabName(int timeState,
+                                                int level) const {
+  const auto key = std::make_pair(timeState, level);
+  auto cached = mfNameCache_.find(key);
+  if (cached != mfNameCache_.end()) {
+    return cached->second;
+  }
+
+  if (timeState < 0 ||
+      timeState >= static_cast<int>(plotfilePaths_.size())) {
+    EXCEPTION1(InvalidVariableException, "Timestep out of range");
+  }
+
+  const std::string headerPath =
+      JoinPath(plotfilePaths_[timeState], "Header");
+  std::ifstream in(headerPath);
+  if (!in) {
+    debug1 << "[amrex-plugin] Failed to open plotfile Header '"
+           << headerPath << "'\n";
+    EXCEPTION1(InvalidFilesException, headerPath.c_str());
+  }
+
+  std::string fileVersion;
+  int ncomp = 0;
+  in >> fileVersion;
+  in >> ncomp;
+
+  std::string line;
+  std::getline(in, line);
+  for (int i = 0; i < ncomp; ++i) {
+    std::getline(in, line);
+  }
+
+  int spacedim = 0;
+  int finestLevel = 0;
+  double time = 0.0;
+  in >> spacedim >> time >> finestLevel;
+  if (level < 0 || level > finestLevel) {
+    debug1 << "[amrex-plugin] MultiFab header read invalid level " << level
+           << " with finest level " << finestLevel << "\n";
+    EXCEPTION1(InvalidVariableException, "Level out of range");
+  }
+
+  double probValue = 0.0;
+  for (int i = 0; i < spacedim; ++i) {
+    in >> probValue;
+  }
+  for (int i = 0; i < spacedim; ++i) {
+    in >> probValue;
+  }
+  int ratio = 0;
+  for (int i = 0; i < finestLevel; ++i) {
+    in >> ratio;
+  }
+  std::getline(in, line);
+
+  amrex::Box probDomain;
+  for (int i = 0; i < finestLevel + 1; ++i) {
+    in >> probDomain;
+  }
+
+  int levelStep = 0;
+  for (int i = 0; i < finestLevel + 1; ++i) {
+    in >> levelStep;
+  }
+
+  for (int ilev = 0; ilev < finestLevel + 1; ++ilev) {
+    for (int idim = 0; idim < spacedim; ++idim) {
+      in >> probValue;
+    }
+  }
+
+  int coordsys = 0;
+  int bwidth = 0;
+  in >> coordsys >> bwidth;
+
+  std::string relname;
+  for (int ilev = 0; ilev < finestLevel + 1; ++ilev) {
+    int levtmp = 0;
+    int ngrids = 0;
+    int levsteptmp = 0;
+    amrex::Real gtime = 0.0;
+    in >> levtmp >> ngrids >> gtime;
+    in >> levsteptmp;
+    amrex::Real glo[3] = {0.0, 0.0, 0.0};
+    amrex::Real ghi[3] = {0.0, 0.0, 0.0};
+    for (int igrid = 0; igrid < ngrids; ++igrid) {
+      for (int idim = 0; idim < spacedim; ++idim) {
+        in >> glo[idim] >> ghi[idim];
+      }
+    }
+    in >> relname;
+    if (ilev == level) {
+      break;
+    }
+    relname.clear();
+  }
+
+  if (!in || relname.empty()) {
+    debug1 << "[amrex-plugin] Failed to read MultiFab name for level "
+           << level << " from '" << headerPath << "'\n";
+    EXCEPTION1(InvalidFilesException, headerPath.c_str());
+  }
+
+  std::string mfName = JoinPath(plotfilePaths_[timeState], relname);
+  mfNameCache_.emplace(key, mfName);
+  return mfName;
 }
 
 std::shared_ptr<amrex::MultiFab> avtamrexFileFormat::GetFieldData(
@@ -2162,8 +2272,7 @@ vtkDataArray *avtamrexFileFormat::LoadScalarPatchData(
   const int componentIndex =
       static_cast<int>(std::distance(varNames.begin(), varIt));
 
-  const std::string mfName =
-      amrex::MultiFabFileFullPrefix(patch.level, plotfilePaths_[timeState]);
+  const std::string mfName = GetMultiFabName(timeState, patch.level);
   amrex::VisMF vismf(mfName);
   if (patch.fabIndex < 0 ||
       patch.fabIndex >= static_cast<int>(vismf.boxArray().size())) {

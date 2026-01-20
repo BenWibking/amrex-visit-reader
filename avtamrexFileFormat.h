@@ -15,6 +15,7 @@
 #include <string>
 #include <tuple>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include <AMReX_MultiFab.H>
@@ -111,6 +112,7 @@ protected:
   mutable std::vector<double> timeValues_;
   mutable std::vector<std::shared_ptr<amrex::PlotFileData>> plotfileCache_;
   mutable std::map<FieldCacheKey, std::shared_ptr<amrex::MultiFab>> fieldDataCache_;
+  mutable std::map<std::pair<int, int>, std::string> mfNameCache_;
   std::unordered_map<std::string, std::tuple<std::string, std::string>> varMap_;
   std::unordered_map<std::string,
                      std::tuple<std::string, std::vector<std::string>>>
@@ -142,6 +144,7 @@ protected:
                               const std::string &meshName,
                               amrex::PlotFileData &plotfile);
   std::shared_ptr<amrex::PlotFileData> GetPlotFile(int timeState) const;
+  std::string GetMultiFabName(int timeState, int level) const;
   std::shared_ptr<amrex::MultiFab>
   GetFieldData(int timeState, int level, const std::string &component) const;
   std::vector<std::pair<unsigned long long, std::string>>
