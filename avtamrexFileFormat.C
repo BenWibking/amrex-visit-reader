@@ -50,6 +50,7 @@
 #include <AMReX.H>
 #include <AMReX_FArrayBox.H>
 #include <AMReX_MultiFab.H>
+#include <AMReX_VisMF.H>
 
 #include <cpptrace/cpptrace.hpp>
 
@@ -2150,15 +2151,33 @@ vtkDataArray *avtamrexFileFormat::LoadScalarPatchData(
          << JoinContainer(patch.offset) << " extent="
          << JoinContainer(patch.extent) << "\n";
 
-  auto data = GetFieldData(timeState, patch.level, component);
+  auto plotfile = GetPlotFile(timeState);
+  const auto &varNames = plotfile->varNames();
+  auto varIt = std::find(varNames.begin(), varNames.end(), component);
+  if (varIt == varNames.end()) {
+    debug1 << "[amrex-plugin] LoadScalarPatchData missing component '"
+           << component << "'\n";
+    EXCEPTION1(InvalidVariableException, component.c_str());
+  }
+  const int componentIndex =
+      static_cast<int>(std::distance(varNames.begin(), varIt));
+
+  const std::string mfName =
+      amrex::MultiFabFileFullPrefix(patch.level, plotfilePaths_[timeState]);
+  amrex::VisMF vismf(mfName);
   if (patch.fabIndex < 0 ||
-      patch.fabIndex >= static_cast<int>(data->size())) {
+      patch.fabIndex >= static_cast<int>(vismf.boxArray().size())) {
     debug1 << "[amrex-plugin] LoadScalarPatchData invalid fab index\n";
     EXCEPTION1(InvalidVariableException, component.c_str());
   }
 
-  const amrex::FArrayBox &fab = (*data)[patch.fabIndex];
-  const amrex::Box &box = fab.box();
+  std::unique_ptr<amrex::FArrayBox> fab(
+      vismf.readFAB(patch.fabIndex, componentIndex));
+  if (fab == nullptr) {
+    debug1 << "[amrex-plugin] LoadScalarPatchData failed to read fab\n";
+    EXCEPTION1(InvalidVariableException, component.c_str());
+  }
+  const amrex::Box &box = fab->box();
 
   int nx = static_cast<int>(patch.extent.size() > 0 ? patch.extent[0] : 1);
   int ny = static_cast<int>(patch.extent.size() > 1 ? patch.extent[1] : 1);
@@ -2189,7 +2208,7 @@ vtkDataArray *avtamrexFileFormat::LoadScalarPatchData(
       for (int i = 0; i < nx; ++i) {
         int ii = loX + i;
         amrex::IntVect iv(AMREX_D_DECL(ii, jj, kk));
-        buffer[idx++] = fab(iv);
+        buffer[idx++] = (*fab)(iv, 0);
       }
     }
   }
