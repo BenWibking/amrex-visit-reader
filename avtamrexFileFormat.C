@@ -2272,8 +2272,16 @@ vtkDataArray *avtamrexFileFormat::LoadScalarPatchData(
   const int componentIndex =
       static_cast<int>(std::distance(varNames.begin(), varIt));
 
+  const std::string headerPath =
+      JoinPath(plotfilePaths_[timeState], "Header");
   const std::string mfName = GetMultiFabName(timeState, patch.level);
+  debug1 << "[amrex-plugin] LoadScalarPatchData Header path='"
+         << headerPath << "' VisMF path='" << mfName
+         << "' level=" << patch.level << " fabIndex=" << patch.fabIndex
+         << " componentIndex=" << componentIndex << "\n";
   amrex::VisMF vismf(mfName);
+  debug1 << "[amrex-plugin] LoadScalarPatchData VisMF header loaded path='"
+         << mfName << "'\n";
   if (patch.fabIndex < 0 ||
       patch.fabIndex >= static_cast<int>(vismf.boxArray().size())) {
     debug1 << "[amrex-plugin] LoadScalarPatchData invalid fab index\n";
