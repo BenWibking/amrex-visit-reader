@@ -76,9 +76,19 @@ support to the AMReX plotfile reader implemented in `avtamrexFileFormat`.
 ### 4. Implement particle loading
 
 1. Add a helper that, given `(timeState, speciesName, shardIndex)`, loads the
-   particle buffer from AMReX (positions + attributes) into a VisIt-friendly
-   struct. Use AMReX iterators to respect level/box decomposition so VisIt's
-   domain-based execution model stays consistent.
+   particle buffer from AMReX (positions + attributes) into a temporary particle
+   container using:
+   ```c++
+   using PhysicsParticleContainer =
+     amrex::AmrParticleContainer_impl<amrex::SoAParticle<AMREX_SPACEDIM, 0>,
+                                      AMREX_SPACEDIM, 0,
+                                      amrex::PolymorphicArenaAllocator>;
+   ```
+   Use AMReX iterators over the `RuntimeParticleContainer` to respect
+   level/box decomposition so VisIt's domain-based execution model stays
+   consistent. Copy from the container into a VisIt-friendly struct and discard
+   the container when the cache is populated to avoid long-lived particle
+   allocations.
 2. Update `GetMesh` to detect when the requested mesh is particle-backed and
    construct a `vtkUnstructuredGrid` or `vtkPolyData` with vertices only (one
    point per particle). Include a global ID array if available.
