@@ -675,24 +675,22 @@ inline std::string JoinPath(const std::string &parent,
 }
 
 inline bool ParsePlotfileDirectoryName(const std::string &name,
+                                       std::string &prefix,
                                        unsigned long long &iteration) {
-  if (name.size() < 4) {
+  if (name.empty()) {
     return false;
   }
-  if (name.rfind("plt", 0) != 0) {
+  size_t end = name.size();
+  size_t start = end;
+  while (start > 0 &&
+         std::isdigit(static_cast<unsigned char>(name[start - 1]))) {
+    --start;
+  }
+  if (start == end) {
     return false;
   }
-
-  std::string digits = name.substr(3);
-  if (digits.empty()) {
-    return false;
-  }
-  for (char c : digits) {
-    if (!std::isdigit(static_cast<unsigned char>(c))) {
-      return false;
-    }
-  }
-
+  prefix = name.substr(0, start);
+  std::string digits = name.substr(start);
   try {
     iteration = static_cast<unsigned long long>(std::stoll(digits));
   } catch (std::exception const &) {
@@ -929,10 +927,11 @@ avtamrexFileFormat::avtamrexFileFormat(const char *filename)
 
   const std::string baseName = Basename(requestedPath);
   unsigned long long requestedIter = 0;
-  if (!ParsePlotfileDirectoryName(baseName, requestedIter)) {
+  std::string requestedPrefix;
+  if (!ParsePlotfileDirectoryName(baseName, requestedPrefix, requestedIter)) {
     std::ostringstream oss;
     oss << "Plotfile '" << filename
-        << "' does not match the expected plt[0-9]* naming.";
+        << "' does not end with a numeric timestep suffix.";
     debug1 << "[amrex-plugin] " << oss.str() << "\n";
     EXCEPTION1(InvalidFilesException, oss.str().c_str());
   }
@@ -953,7 +952,11 @@ avtamrexFileFormat::avtamrexFileFormat(const char *filename)
   std::string baseDirForJoin = baseDir == "." ? "" : baseDir;
   for (const auto &entryName : dirEntries) {
     unsigned long long iterValue = 0;
-    if (!ParsePlotfileDirectoryName(entryName, iterValue)) {
+    std::string entryPrefix;
+    if (!ParsePlotfileDirectoryName(entryName, entryPrefix, iterValue)) {
+      continue;
+    }
+    if (entryPrefix != requestedPrefix) {
       continue;
     }
 
@@ -966,8 +969,8 @@ avtamrexFileFormat::avtamrexFileFormat(const char *filename)
 
   if (matches.empty()) {
     std::ostringstream oss;
-    oss << "No plotfile directories matching plt[0-9]* found in '"
-        << baseDir << "'.";
+    oss << "No plotfile directories matching '" << requestedPrefix
+        << "<digits>' found in '" << baseDir << "'.";
     debug1 << "[amrex-plugin] " << oss.str() << "\n";
     EXCEPTION1(InvalidFilesException, oss.str().c_str());
   }

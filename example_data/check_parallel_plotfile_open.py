@@ -12,9 +12,9 @@ import socket
 
 
 def resolve_dataset_path():
-    """Return the dataset path from argv or fall back to the default 3D sample."""
+    """Return the dataset path from argv or fall back to the particle sample."""
     script_dir = os.path.abspath(os.path.dirname(__file__))
-    default_dataset = os.path.join(script_dir, "Nyx_LyA", "plt00000")
+    default_dataset = os.path.join(script_dir, "StarParticles", "plrd01000")
     dataset = default_dataset
     if len(sys.argv) > 1:
         dataset = sys.argv[1]
