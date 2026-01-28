@@ -1044,8 +1044,32 @@ avtamrexFileFormat::GetVisMF(int timeState, int level) const {
     return it->second;
   }
 
-  std::string mfName = GetMultiFabName(timeState, level);
-  auto vismf = std::make_shared<amrex::VisMF>(mfName);
+  auto plotfileImpl = GetPlotFileImpl(timeState);
+  if (plotfileImpl == nullptr) {
+    EXCEPTION1(InvalidFilesException, plotfilePaths_[timeState].c_str());
+  }
+  if (level < 0 ||
+      level >= static_cast<int>(plotfileImpl->m_vismf.size())) {
+    debug1 << "[amrex-plugin] GetVisMF invalid level " << level
+           << " with levels " << plotfileImpl->m_vismf.size() << "\n";
+    EXCEPTION1(InvalidVariableException, "Level out of range");
+  }
+
+  auto &vismfPtr = plotfileImpl->m_vismf[level];
+  if (!vismfPtr) {
+    std::string mfName = plotfileImpl->m_mf_name[level];
+    if (!mfName.empty() && mfName[0] != '/') {
+      mfName = plotfilePaths_[timeState] + "/" + mfName;
+    }
+    debug1 << "[amrex-plugin] GetVisMF constructing VisMF timeState="
+           << timeState << " level=" << level << " mfName='" << mfName
+           << "'\n";
+    vismfPtr = std::make_unique<amrex::VisMF>(mfName);
+  }
+
+  auto vismf = std::shared_ptr<amrex::VisMF>(plotfileImpl, vismfPtr.get());
+  debug1 << "[amrex-plugin] GetVisMF ready level=" << level
+         << " size=" << vismf->size() << " nComp=" << vismf->nComp() << "\n";
   vismfCache_.emplace(key, vismf);
   return vismf;
 }
@@ -1088,6 +1112,11 @@ std::string avtamrexFileFormat::GetMultiFabName(int timeState,
   }
 
   std::string mfName = plotfile->m_mf_name[level];
+  if (!mfName.empty() && mfName[0] != '/') {
+    // Plotfile headers store relative MultiFab paths; make them absolute
+    // so parallel engines don't depend on the current working directory.
+    mfName = plotfilePaths_[timeState] + "/" + mfName;
+  }
   mfNameCache_.emplace(key, mfName);
   return mfName;
 }
@@ -1386,6 +1415,9 @@ void avtamrexFileFormat::PopulateDatabaseMetaData(avtDatabaseMetaData *md,
   meshMap_.clear();
 
   EnsureHierarchyInitialized(timeState);
+  // Ensure all ranks build PlotFileDataImpl together to avoid
+  // mismatched collective reads when constructing VisMF headers.
+  GetPlotFileImpl(timeState);
 
   auto plotfile = GetPlotFile(timeState);
   BuildFieldHierarchy(md, *plotfile, timeState);
@@ -2169,6 +2201,20 @@ vtkDataArray *avtamrexFileFormat::LoadScalarPatchData(
     debug1 << "[amrex-plugin] LoadScalarPatchData VisMF missing for level "
            << patch.level << "\n";
     EXCEPTION1(InvalidFilesException, component.c_str());
+  }
+  const int fabCount = vismf->size();
+  if (patch.fabIndex < 0 || patch.fabIndex >= fabCount) {
+    debug1 << "[amrex-plugin] LoadScalarPatchData invalid fab index "
+           << patch.fabIndex << " for level " << patch.level
+           << " with fab count " << fabCount << "\n";
+    EXCEPTION1(InvalidFilesException, component.c_str());
+  }
+  const int mfComponents = vismf->nComp();
+  if (compIndex < 0 || compIndex >= mfComponents) {
+    debug1 << "[amrex-plugin] LoadScalarPatchData component index "
+           << compIndex << " out of range for MultiFab nComp="
+           << mfComponents << "\n";
+    EXCEPTION1(InvalidVariableException, component.c_str());
   }
 
   const amrex::FArrayBox &fab = vismf->GetFab(patch.fabIndex, compIndex);
