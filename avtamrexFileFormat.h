@@ -18,6 +18,7 @@
 #include <utility>
 #include <vector>
 
+#include <AMReX_Box.H>
 #include <AMReX_PlotFileUtil.H>
 
 #include <DebugStream.h>
@@ -40,6 +41,7 @@ struct PatchInfo {
   int level{0};
   std::vector<long long> offset;
   std::vector<uint64_t> extent;
+  amrex::Box cellBox;
   std::vector<long long> storageOffset;
   std::vector<uint64_t> storageExtent;
   std::vector<uint64_t> storageOffsetCanonical;
@@ -94,6 +96,8 @@ public:
   enum class DatasetType { Field = 0 };
 
 protected:
+  // NOTE: VisIt calls this reader from a single thread per instance.
+  // The internal caches are not thread-safe by design.
   struct FieldCacheKey {
     int timeState{0};
     int level{0};

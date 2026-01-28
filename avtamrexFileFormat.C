@@ -114,63 +114,14 @@ inline void GetPhysicalBounds(const PatchInfo &patch, double minBounds[3],
   }
 }
 
-inline bool IsChildPatch(const PatchInfo &coarse, const PatchInfo &fine) {
-  double coarseMin[3] = {0.0, 0.0, 0.0};
-  double coarseMax[3] = {0.0, 0.0, 0.0};
-  double fineMin[3] = {0.0, 0.0, 0.0};
-  double fineMax[3] = {0.0, 0.0, 0.0};
-
-  GetPhysicalBounds(coarse, coarseMin, coarseMax);
-  GetPhysicalBounds(fine, fineMin, fineMax);
-
-  bool fineStrictlyInside = true;
-  bool boxesOverlap = true;
-  bool hasFinerResolutionAxis = false;
-
-  for (int axis = 0; axis < 3; ++axis) {
-    const double coarseSpacing = std::abs(coarse.spacing[axis]);
-    const double fineSpacing = std::abs(fine.spacing[axis]);
-    const double tol = std::max({coarseSpacing, fineSpacing, 1.0}) * 1e-5;
-
-    if (fineMin[axis] < coarseMin[axis] - tol ||
-        fineMax[axis] > coarseMax[axis] + tol) {
-      fineStrictlyInside = false;
-    }
-
-    const double coarseWidth = coarseMax[axis] - coarseMin[axis];
-    const double fineWidth = fineMax[axis] - fineMin[axis];
-    bool axisOverlap = false;
-    if (coarseWidth <= tol && fineWidth <= tol) {
-      const double minDelta = std::abs(fineMin[axis] - coarseMin[axis]);
-      const double maxDelta = std::abs(fineMax[axis] - coarseMax[axis]);
-      axisOverlap = (minDelta <= tol) && (maxDelta <= tol);
-    } else {
-      axisOverlap = (fineMin[axis] < coarseMax[axis] - tol) &&
-                    (fineMax[axis] > coarseMin[axis] + tol);
-    }
-    if (!axisOverlap) {
-      boxesOverlap = false;
-    }
-
-    if (coarseSpacing > 0.0 && fineSpacing > 0.0 &&
-        fineSpacing + tol < coarseSpacing) {
-      hasFinerResolutionAxis = true;
-    }
-  }
-
-  if (!boxesOverlap) {
+inline bool IsChildPatch(const PatchInfo &coarse, const PatchInfo &fine,
+                         const amrex::IntVect &refRatio) {
+  if (fine.level != coarse.level + 1) {
     return false;
   }
 
-  if (fineStrictlyInside) {
-    return true;
-  }
-
-  if (!hasFinerResolutionAxis) {
-    return false;
-  }
-
-  return true;
+  amrex::Box fineOnCoarse = amrex::coarsen(fine.cellBox, refRatio);
+  return fineOnCoarse.intersects(coarse.cellBox);
 }
 
 inline bool MeshIsNodeCentered(const MeshPatchHierarchy &hierarchy) {
@@ -436,6 +387,10 @@ inline std::vector<double> MakeCellSizeVector(const std::array<double, 3> &sizes
     result[axis] = sizes[axis];
   }
   return result;
+}
+
+inline amrex::IntVect MakeRefRatioIntVect(const std::array<int, 3> &ratio) {
+  return amrex::IntVect(AMREX_D_DECL(ratio[0], ratio[1], ratio[2]));
 }
 
 inline void WriteStderr(const char *message, size_t length) {
@@ -1438,6 +1393,7 @@ MeshPatchHierarchy avtamrexFileFormat::BuildHierarchyFromPlotfile(
       patch.meshName = visitMeshName;
       patch.level = level;
       patch.fabIndex = idx;
+      patch.cellBox = box;
       patch.centering = AVT_ZONECENT;
       patch.spatialDim = hierarchy.spatialDim;
       patch.offset = {box.smallEnd(0), box.smallEnd(1), box.smallEnd(2)};
@@ -1845,11 +1801,19 @@ avtamrexFileFormat::BuildDomainNesting(
 
     std::vector<int> children;
     if (levelIndex + 1 < hierarchy.numLevels) {
-      const auto &candidateChildren =
-          hierarchy.patchesPerLevel[levelIndex + 1];
-      for (int childIdx : candidateChildren) {
-        if (IsChildPatch(patch, hierarchy.patches[childIdx])) {
-          children.push_back(childIdx);
+      if (levelIndex >=
+          static_cast<int>(hierarchy.levelRefinementRatios.size())) {
+        debug1 << "[amrex-plugin] Missing refinement ratio for level "
+               << levelIndex << " while building nesting\n";
+      } else {
+        const auto refRatio = MakeRefRatioIntVect(
+            hierarchy.levelRefinementRatios[levelIndex]);
+        const auto &candidateChildren =
+            hierarchy.patchesPerLevel[levelIndex + 1];
+        for (int childIdx : candidateChildren) {
+          if (IsChildPatch(patch, hierarchy.patches[childIdx], refRatio)) {
+            children.push_back(childIdx);
+          }
         }
       }
     }
@@ -2172,72 +2136,13 @@ void avtamrexFileFormat::AddGhostZonesForPatch(
     return;
   }
 
-  std::vector<std::array<int, 6>> refinedRanges;
-  refinedRanges.reserve(candidateChildren.size());
-
-  for (int childIdx : candidateChildren) {
-    if (childIdx < 0 ||
-        childIdx >= static_cast<int>(hierarchy.patches.size())) {
-      continue;
-    }
-
-    const PatchInfo &child = hierarchy.patches[childIdx];
-    if (!IsChildPatch(patch, child)) {
-      continue;
-    }
-
-    std::array<int, 6> range{0, -1, 0, -1, 0, -1};
-    bool hasOverlap = true;
-
-    for (int axis = 0; axis < 3; ++axis) {
-      const int parentLower = patch.logicalLower[axis];
-      const int parentUpper = patch.logicalUpper[axis];
-
-      const int childLower = child.logicalLower[axis];
-      const int childUpper = child.logicalUpper[axis];
-
-      if (parentUpper < parentLower || childUpper < childLower) {
-        hasOverlap = false;
-        break;
-      }
-
-      const double parentSpacing = std::abs(patch.spacing[axis]);
-      const double childSpacing = std::abs(child.spacing[axis]);
-
-      int refine = 1;
-      if (parentSpacing > 0.0 && childSpacing > 0.0) {
-        refine = std::max(1, static_cast<int>(std::lround(parentSpacing / childSpacing)));
-      }
-
-      int coarseLower = childLower;
-      int coarseUpper = childUpper;
-      if (refine > 1) {
-        coarseLower = childLower / refine;
-        coarseUpper = (childUpper + refine) / refine - 1;
-      }
-
-      int overlapLower = std::max(parentLower, coarseLower);
-      int overlapUpper = std::min(parentUpper, coarseUpper);
-      if (overlapLower > overlapUpper) {
-        hasOverlap = false;
-        break;
-      }
-
-      const int localLower = overlapLower - parentLower;
-      const int localUpper = overlapUpper - parentLower;
-
-      range[axis] = localLower;
-      range[axis + 3] = localUpper;
-    }
-
-    if (hasOverlap) {
-      refinedRanges.push_back(range);
-    }
-  }
-
-  if (refinedRanges.empty()) {
+  if (levelIndex >= static_cast<int>(hierarchy.levelRefinementRatios.size())) {
+    debug1 << "[amrex-plugin] Missing refinement ratio for level "
+           << levelIndex << " while building ghost zones\n";
     return;
   }
+  const auto refRatio =
+      MakeRefRatioIntVect(hierarchy.levelRefinementRatios[levelIndex]);
 
   const int nx = patch.extent.size() > 0
                      ? static_cast<int>(patch.extent[0])
@@ -2262,13 +2167,35 @@ void avtamrexFileFormat::AddGhostZonesForPatch(
   unsigned char *values = ghostArray->GetPointer(0);
   std::fill(values, values + cellCount, 0);
 
-  for (const auto &range : refinedRanges) {
-    const int x0 = std::max(0, range[0]);
-    const int x1 = std::min(nx - 1, range[3]);
-    const int y0 = std::max(0, range[1]);
-    const int y1 = std::min(ny - 1, range[4]);
-    const int z0 = std::max(0, range[2]);
-    const int z1 = std::min(nz - 1, range[5]);
+  bool markedAny = false;
+  for (int childIdx : candidateChildren) {
+    if (childIdx < 0 ||
+        childIdx >= static_cast<int>(hierarchy.patches.size())) {
+      continue;
+    }
+
+    const PatchInfo &child = hierarchy.patches[childIdx];
+    if (!IsChildPatch(patch, child, refRatio)) {
+      continue;
+    }
+
+    amrex::Box fineOnCoarse = amrex::coarsen(child.cellBox, refRatio);
+    amrex::Box overlap = fineOnCoarse & patch.cellBox;
+    if (!overlap.ok()) {
+      continue;
+    }
+
+    const amrex::IntVect localLo =
+        overlap.smallEnd() - patch.cellBox.smallEnd();
+    const amrex::IntVect localHi =
+        overlap.bigEnd() - patch.cellBox.smallEnd();
+
+    const int x0 = std::max(0, localLo[0]);
+    const int x1 = std::min(nx - 1, localHi[0]);
+    const int y0 = std::max(0, localLo[1]);
+    const int y1 = std::min(ny - 1, localHi[1]);
+    const int z0 = std::max(0, localLo[2]);
+    const int z1 = std::min(nz - 1, localHi[2]);
 
     if (x0 > x1 || y0 > y1 || z0 > z1) {
       continue;
@@ -2285,9 +2212,12 @@ void avtamrexFileFormat::AddGhostZonesForPatch(
         }
       }
     }
+    markedAny = true;
   }
 
-  grid->GetCellData()->AddArray(ghostArray);
+  if (markedAny) {
+    grid->GetCellData()->AddArray(ghostArray);
+  }
   ghostArray->Delete();
 }
 
