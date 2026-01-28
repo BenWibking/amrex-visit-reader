@@ -90,30 +90,6 @@ inline void ComputeLogicalExtents(PatchInfo &patch) {
   }
 }
 
-inline amrex::Box MakePatchBox(const PatchInfo &patch) {
-  amrex::IntVect lo(AMREX_D_DECL(patch.logicalLower[0], patch.logicalLower[1],
-                                 patch.logicalLower[2]));
-  amrex::IntVect hi(AMREX_D_DECL(patch.logicalUpper[0], patch.logicalUpper[1],
-                                 patch.logicalUpper[2]));
-  return amrex::Box(lo, hi);
-}
-
-inline void GetPhysicalBounds(const PatchInfo &patch, double minBounds[3],
-                              double maxBounds[3]) {
-  for (int axis = 0; axis < 3; ++axis) {
-    const double spacing = patch.spacing[axis];
-    const double origin = patch.origin[axis];
-    const int cells = patch.logicalUpper[axis] - patch.logicalLower[axis] + 1;
-    if (spacing == 0.0 || cells <= 0) {
-      minBounds[axis] = origin;
-      maxBounds[axis] = origin;
-    } else {
-      minBounds[axis] = origin;
-      maxBounds[axis] = origin + spacing * static_cast<double>(cells);
-    }
-  }
-}
-
 inline bool IsChildPatch(const PatchInfo &coarse, const PatchInfo &fine,
                          const amrex::IntVect &refRatio) {
   if (fine.level != coarse.level + 1) {
@@ -2249,6 +2225,12 @@ vtkDataArray *avtamrexFileFormat::LoadScalarPatchData(
 
   const amrex::FArrayBox &fab = vismf->GetFab(patch.fabIndex, compIndex);
   QueueVisMFClear({timeState, patch.level}, patch.fabIndex, compIndex);
+  if (compIndex < 0 || compIndex >= fab.nComp()) {
+    debug1 << "[amrex-plugin] LoadScalarPatchData component index "
+           << compIndex << " out of range for fab nComp=" << fab.nComp()
+           << "\n";
+    EXCEPTION1(InvalidVariableException, component.c_str());
+  }
   const amrex::Box &box = fab.box();
 
   int nx = static_cast<int>(patch.extent.size() > 0 ? patch.extent[0] : 1);
@@ -2268,19 +2250,29 @@ vtkDataArray *avtamrexFileFormat::LoadScalarPatchData(
   array->SetNumberOfTuples(tupleCount);
   double *buffer = array->GetPointer(0);
 
-  vtkIdType idx = 0;
   const int loX = box.smallEnd(0);
   const int loY = box.smallEnd(1);
   const int loZ = box.smallEnd(2);
+  const int fabNx = box.length(0);
+  const int fabNy = box.length(1);
+  const int fabNz = box.length(2);
+  const int fabComp = compIndex;
+  const amrex::Real *src = fab.dataPtr(fabComp);
 
-  for (int k = 0; k < nz; ++k) {
-    int kk = loZ + (patch.spatialDim >= 3 ? k : 0);
-    for (int j = 0; j < ny; ++j) {
-      int jj = loY + (patch.spatialDim >= 2 ? j : 0);
-      for (int i = 0; i < nx; ++i) {
-        int ii = loX + i;
-        amrex::IntVect iv(AMREX_D_DECL(ii, jj, kk));
-        buffer[idx++] = fab(iv, 0);
+  if (nx == fabNx && ny == fabNy && nz == fabNz) {
+    std::copy(src, src + static_cast<vtkIdType>(tupleCount), buffer);
+  } else {
+    vtkIdType idx = 0;
+    for (int k = 0; k < nz; ++k) {
+      int kk = loZ + (patch.spatialDim >= 3 ? k : 0);
+      const int kOffset = kk - loZ;
+      for (int j = 0; j < ny; ++j) {
+        int jj = loY + (patch.spatialDim >= 2 ? j : 0);
+        const int jOffset = jj - loY;
+        const amrex::Real *row =
+            src + (kOffset * fabNy + jOffset) * fabNx;
+        std::copy(row, row + nx, buffer + idx);
+        idx += nx;
       }
     }
   }
