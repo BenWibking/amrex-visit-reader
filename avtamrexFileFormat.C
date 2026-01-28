@@ -49,8 +49,8 @@
 #include <vtkIdTypeArray.h>
 
 #include <AMReX.H>
+#include <AMReX_ParallelDescriptor.H>
 #include <AMReX_FArrayBox.H>
-#include <AMReX_MultiFab.H>
 #include <AMReX_VisMF.H>
 
 #include <cpptrace/cpptrace.hpp>
@@ -88,6 +88,14 @@ inline void ComputeLogicalExtents(PatchInfo &patch) {
     patch.logicalLower[axis] = lower;
     patch.logicalUpper[axis] = lower + cells - 1;
   }
+}
+
+inline amrex::Box MakePatchBox(const PatchInfo &patch) {
+  amrex::IntVect lo(AMREX_D_DECL(patch.logicalLower[0], patch.logicalLower[1],
+                                 patch.logicalLower[2]));
+  amrex::IntVect hi(AMREX_D_DECL(patch.logicalUpper[0], patch.logicalUpper[1],
+                                 patch.logicalUpper[2]));
+  return amrex::Box(lo, hi);
 }
 
 inline void GetPhysicalBounds(const PatchInfo &patch, double minBounds[3],
@@ -1077,6 +1085,25 @@ avtamrexFileFormat::GetPlotFile(int timeState) const {
   return cache;
 }
 
+std::shared_ptr<amrex::VisMF>
+avtamrexFileFormat::GetVisMF(int timeState, int level) const {
+  VisMFCacheKey key{timeState, level};
+  auto it = vismfCache_.find(key);
+  if (it != vismfCache_.end()) {
+    return it->second;
+  }
+
+  std::string mfName = GetMultiFabName(timeState, level);
+  auto vismf = std::make_shared<amrex::VisMF>(mfName);
+  vismfCache_.emplace(key, vismf);
+  return vismf;
+}
+
+void avtamrexFileFormat::QueueVisMFClear(const VisMFCacheKey &key, int fabIndex,
+                                         int compIndex) const {
+  vismfClearList_.push_back({key, fabIndex, compIndex});
+}
+
 std::string avtamrexFileFormat::GetMultiFabName(int timeState,
                                                 int level) const {
   const auto key = std::make_pair(timeState, level);
@@ -1090,14 +1117,17 @@ std::string avtamrexFileFormat::GetMultiFabName(int timeState,
     EXCEPTION1(InvalidVariableException, "Timestep out of range");
   }
 
-  const std::string headerPath =
-      JoinPath(plotfilePaths_[timeState], "Header");
-  std::ifstream in(headerPath);
-  if (!in) {
-    debug1 << "[amrex-plugin] Failed to open plotfile Header '"
+  const std::string headerPath = JoinPath(plotfilePaths_[timeState], "Header");
+  amrex::Vector<char> fileBuffer;
+  try {
+    amrex::ParallelDescriptor::ReadAndBcastFile(headerPath, fileBuffer);
+  } catch (...) {
+    debug1 << "[amrex-plugin] Failed to broadcast plotfile Header '"
            << headerPath << "'\n";
     EXCEPTION1(InvalidFilesException, headerPath.c_str());
   }
+  std::istringstream in(std::string(fileBuffer.dataPtr()),
+                        std::istringstream::in);
 
   std::string fileVersion;
   int ncomp = 0;
@@ -1186,20 +1216,6 @@ std::string avtamrexFileFormat::GetMultiFabName(int timeState,
   return mfName;
 }
 
-std::shared_ptr<amrex::MultiFab> avtamrexFileFormat::GetFieldData(
-    int timeState, int level, const std::string &component) const {
-  FieldCacheKey key{timeState, level, component};
-  auto it = fieldDataCache_.find(key);
-  if (it != fieldDataCache_.end()) {
-    return it->second;
-  }
-
-  auto plotfile = GetPlotFile(timeState);
-  auto multiFab = std::make_shared<amrex::MultiFab>(plotfile->get(level, component));
-  fieldDataCache_.emplace(std::move(key), multiFab);
-  return multiFab;
-}
-
 // ****************************************************************************
 //  Method: avtamrexFileFormat::GetNTimesteps
 //
@@ -1231,10 +1247,31 @@ int avtamrexFileFormat::GetNTimesteps(void) {
 
 void avtamrexFileFormat::FreeUpResources(void) {
   debug1 << "[amrex-plugin] FreeUpResources\n";
-  fieldDataCache_.clear();
   for (auto &entry : plotfileCache_) {
     entry.reset();
   }
+
+  if (!vismfClearList_.empty()) {
+    std::sort(vismfClearList_.begin(), vismfClearList_.end());
+    auto last = std::unique(vismfClearList_.begin(), vismfClearList_.end(),
+                            [](const VisMFClearEntry &lhs,
+                               const VisMFClearEntry &rhs) {
+                              return lhs.key.timeState == rhs.key.timeState &&
+                                     lhs.key.level == rhs.key.level &&
+                                     lhs.fabIndex == rhs.fabIndex &&
+                                     lhs.compIndex == rhs.compIndex;
+                            });
+    vismfClearList_.erase(last, vismfClearList_.end());
+
+    for (const auto &entry : vismfClearList_) {
+      auto it = vismfCache_.find(entry.key);
+      if (it != vismfCache_.end() && it->second != nullptr) {
+        it->second->clear(entry.fabIndex, entry.compIndex);
+      }
+    }
+    vismfClearList_.clear();
+  }
+  vismfCache_.clear();
 }
 
 void avtamrexFileFormat::PopulateHierarchyCache(int timeState) {
@@ -2269,32 +2306,20 @@ vtkDataArray *avtamrexFileFormat::LoadScalarPatchData(
            << component << "'\n";
     EXCEPTION1(InvalidVariableException, component.c_str());
   }
-  const int componentIndex =
-      static_cast<int>(std::distance(varNames.begin(), varIt));
+  int compIndex = static_cast<int>(varIt - varNames.begin());
 
-  const std::string headerPath =
-      JoinPath(plotfilePaths_[timeState], "Header");
-  const std::string mfName = GetMultiFabName(timeState, patch.level);
-  debug1 << "[amrex-plugin] LoadScalarPatchData Header path='"
-         << headerPath << "' VisMF path='" << mfName
-         << "' level=" << patch.level << " fabIndex=" << patch.fabIndex
-         << " componentIndex=" << componentIndex << "\n";
-  amrex::VisMF vismf(mfName);
-  debug1 << "[amrex-plugin] LoadScalarPatchData VisMF header loaded path='"
-         << mfName << "'\n";
-  if (patch.fabIndex < 0 ||
-      patch.fabIndex >= static_cast<int>(vismf.boxArray().size())) {
-    debug1 << "[amrex-plugin] LoadScalarPatchData invalid fab index\n";
-    EXCEPTION1(InvalidVariableException, component.c_str());
+  debug1 << "[amrex-plugin] LoadScalarPatchData VisMF read level="
+         << patch.level << " component='" << component << "'\n";
+  auto vismf = GetVisMF(timeState, patch.level);
+  if (vismf == nullptr) {
+    debug1 << "[amrex-plugin] LoadScalarPatchData VisMF missing for level "
+           << patch.level << "\n";
+    EXCEPTION1(InvalidFilesException, component.c_str());
   }
 
-  std::unique_ptr<amrex::FArrayBox> fab(
-      vismf.readFAB(patch.fabIndex, componentIndex));
-  if (fab == nullptr) {
-    debug1 << "[amrex-plugin] LoadScalarPatchData failed to read fab\n";
-    EXCEPTION1(InvalidVariableException, component.c_str());
-  }
-  const amrex::Box &box = fab->box();
+  const amrex::FArrayBox &fab = vismf->GetFab(patch.fabIndex, compIndex);
+  QueueVisMFClear({timeState, patch.level}, patch.fabIndex, compIndex);
+  const amrex::Box &box = fab.box();
 
   int nx = static_cast<int>(patch.extent.size() > 0 ? patch.extent[0] : 1);
   int ny = static_cast<int>(patch.extent.size() > 1 ? patch.extent[1] : 1);
@@ -2325,7 +2350,7 @@ vtkDataArray *avtamrexFileFormat::LoadScalarPatchData(
       for (int i = 0; i < nx; ++i) {
         int ii = loX + i;
         amrex::IntVect iv(AMREX_D_DECL(ii, jj, kk));
-        buffer[idx++] = (*fab)(iv, 0);
+        buffer[idx++] = fab(iv, 0);
       }
     }
   }

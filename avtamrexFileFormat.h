@@ -18,7 +18,6 @@
 #include <utility>
 #include <vector>
 
-#include <AMReX_MultiFab.H>
 #include <AMReX_PlotFileUtil.H>
 
 #include <DebugStream.h>
@@ -32,6 +31,10 @@ class vtkDataArray;
 class vtkDataSet;
 class vtkRectilinearGrid;
 class vtkIdTypeArray;
+
+namespace amrex {
+class VisMF;
+}
 
 struct PatchInfo {
   int level{0};
@@ -107,12 +110,44 @@ protected:
     }
   };
 
+  struct VisMFCacheKey {
+    int timeState{0};
+    int level{0};
+
+    bool operator<(const VisMFCacheKey &other) const {
+      if (timeState != other.timeState) {
+        return timeState < other.timeState;
+      }
+      return level < other.level;
+    }
+  };
+
+  struct VisMFClearEntry {
+    VisMFCacheKey key;
+    int fabIndex{0};
+    int compIndex{0};
+
+    bool operator<(const VisMFClearEntry &other) const {
+      if (key < other.key) {
+        return true;
+      }
+      if (other.key < key) {
+        return false;
+      }
+      if (fabIndex != other.fabIndex) {
+        return fabIndex < other.fabIndex;
+      }
+      return compIndex < other.compIndex;
+    }
+  };
+
   std::vector<std::string> plotfilePaths_;
   std::vector<unsigned long long> iterationIndex_;
   mutable std::vector<double> timeValues_;
   mutable std::vector<std::shared_ptr<amrex::PlotFileData>> plotfileCache_;
-  mutable std::map<FieldCacheKey, std::shared_ptr<amrex::MultiFab>> fieldDataCache_;
   mutable std::map<std::pair<int, int>, std::string> mfNameCache_;
+  mutable std::map<VisMFCacheKey, std::shared_ptr<amrex::VisMF>> vismfCache_;
+  mutable std::vector<VisMFClearEntry> vismfClearList_;
   std::unordered_map<std::string, std::tuple<std::string, std::string>> varMap_;
   std::unordered_map<std::string,
                      std::tuple<std::string, std::vector<std::string>>>
@@ -144,9 +179,10 @@ protected:
                               const std::string &meshName,
                               amrex::PlotFileData &plotfile);
   std::shared_ptr<amrex::PlotFileData> GetPlotFile(int timeState) const;
+  std::shared_ptr<amrex::VisMF> GetVisMF(int timeState, int level) const;
+  void QueueVisMFClear(const VisMFCacheKey &key, int fabIndex,
+                       int compIndex) const;
   std::string GetMultiFabName(int timeState, int level) const;
-  std::shared_ptr<amrex::MultiFab>
-  GetFieldData(int timeState, int level, const std::string &component) const;
   std::vector<std::pair<unsigned long long, std::string>>
   ResolveDescriptorPaths(const std::string &descriptorPath,
                          const std::string &rawPath);

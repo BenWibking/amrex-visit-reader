@@ -46,6 +46,7 @@ function(configure_amrex_plugin target_name)
     endif()
     target_include_directories(${target_name} PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
+        ${amrex_SOURCE_DIR}/Src/Extern/amrdata
         ${VISIT_DATABASE_INCLUDES})
 endfunction()
 
@@ -70,6 +71,7 @@ LINK_DIRECTORIES(${VISIT_LIBRARY_DIR})
 # AMReX superbuild
 set(AMREX_GIT_TAG "24.05" CACHE STRING "AMReX git tag to fetch")
 set(AMReX_BUILD_SHARED_LIBS ON CACHE BOOL "" FORCE)
+set(AMReX_AMRDATA ON CACHE BOOL "" FORCE)
 set(AMReX_FORTRAN OFF CACHE BOOL "" FORCE)
 set(AMReX_EB OFF CACHE BOOL "" FORCE)
 set(AMReX_LINEAR_SOLVERS OFF CACHE BOOL "" FORCE)
