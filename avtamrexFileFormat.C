@@ -51,6 +51,7 @@
 #include <AMReX.H>
 #include <AMReX_ParallelDescriptor.H>
 #include <AMReX_FArrayBox.H>
+#include <AMReX_PlotFileDataImpl.H>
 #include <AMReX_VisMF.H>
 
 #include <cpptrace/cpptrace.hpp>
@@ -989,6 +990,7 @@ avtamrexFileFormat::avtamrexFileFormat(const char *filename)
   const size_t numTimesteps = plotfilePaths_.size();
   meshHierarchyCache_.resize(numTimesteps);
   plotfileCache_.resize(numTimesteps);
+  plotfileImplCache_.resize(numTimesteps);
   timeValues_.assign(numTimesteps, std::numeric_limits<double>::quiet_NaN());
 
   debug1 << "[amrex-plugin] Constructor ready. plotfile='" << filename
@@ -1011,6 +1013,21 @@ avtamrexFileFormat::GetPlotFile(int timeState) const {
   auto &cache = plotfileCache_.at(static_cast<size_t>(timeState));
   if (!cache) {
     cache = std::make_shared<amrex::PlotFileData>(plotfilePaths_[timeState]);
+    timeValues_[timeState] = cache->time();
+  }
+  return cache;
+}
+
+std::shared_ptr<amrex::PlotFileDataImpl>
+avtamrexFileFormat::GetPlotFileImpl(int timeState) const {
+  if (timeState < 0 ||
+      timeState >= static_cast<int>(plotfilePaths_.size())) {
+    EXCEPTION1(InvalidVariableException, "Timestep out of range");
+  }
+
+  auto &cache = plotfileImplCache_.at(static_cast<size_t>(timeState));
+  if (!cache) {
+    cache = std::make_shared<amrex::PlotFileDataImpl>(plotfilePaths_[timeState]);
     timeValues_[timeState] = cache->time();
   }
   return cache;
@@ -1048,101 +1065,26 @@ std::string avtamrexFileFormat::GetMultiFabName(int timeState,
     EXCEPTION1(InvalidVariableException, "Timestep out of range");
   }
 
-  const std::string headerPath = JoinPath(plotfilePaths_[timeState], "Header");
-  amrex::Vector<char> fileBuffer;
-  try {
-    amrex::ParallelDescriptor::ReadAndBcastFile(headerPath, fileBuffer);
-  } catch (...) {
-    debug1 << "[amrex-plugin] Failed to broadcast plotfile Header '"
-           << headerPath << "'\n";
-    EXCEPTION1(InvalidFilesException, headerPath.c_str());
-  }
-  std::istringstream in(std::string(fileBuffer.dataPtr()),
-                        std::istringstream::in);
-
-  std::string fileVersion;
-  int ncomp = 0;
-  in >> fileVersion;
-  in >> ncomp;
-
-  std::string line;
-  std::getline(in, line);
-  for (int i = 0; i < ncomp; ++i) {
-    std::getline(in, line);
+  auto plotfile = GetPlotFileImpl(timeState);
+  if (plotfile == nullptr) {
+    EXCEPTION1(InvalidFilesException, plotfilePaths_[timeState].c_str());
   }
 
-  int spacedim = 0;
-  int finestLevel = 0;
-  double time = 0.0;
-  in >> spacedim >> time >> finestLevel;
+  int finestLevel = plotfile->finestLevel();
   if (level < 0 || level > finestLevel) {
     debug1 << "[amrex-plugin] MultiFab header read invalid level " << level
            << " with finest level " << finestLevel << "\n";
     EXCEPTION1(InvalidVariableException, "Level out of range");
   }
 
-  double probValue = 0.0;
-  for (int i = 0; i < spacedim; ++i) {
-    in >> probValue;
-  }
-  for (int i = 0; i < spacedim; ++i) {
-    in >> probValue;
-  }
-  int ratio = 0;
-  for (int i = 0; i < finestLevel; ++i) {
-    in >> ratio;
-  }
-  std::getline(in, line);
-
-  amrex::Box probDomain;
-  for (int i = 0; i < finestLevel + 1; ++i) {
-    in >> probDomain;
+  if (level >= static_cast<int>(plotfile->m_mf_name.size()) ||
+      plotfile->m_mf_name[level].empty()) {
+    debug1 << "[amrex-plugin] Missing MultiFab name for level " << level
+           << " in plotfile '" << plotfilePaths_[timeState] << "'\n";
+    EXCEPTION1(InvalidFilesException, plotfilePaths_[timeState].c_str());
   }
 
-  int levelStep = 0;
-  for (int i = 0; i < finestLevel + 1; ++i) {
-    in >> levelStep;
-  }
-
-  for (int ilev = 0; ilev < finestLevel + 1; ++ilev) {
-    for (int idim = 0; idim < spacedim; ++idim) {
-      in >> probValue;
-    }
-  }
-
-  int coordsys = 0;
-  int bwidth = 0;
-  in >> coordsys >> bwidth;
-
-  std::string relname;
-  for (int ilev = 0; ilev < finestLevel + 1; ++ilev) {
-    int levtmp = 0;
-    int ngrids = 0;
-    int levsteptmp = 0;
-    amrex::Real gtime = 0.0;
-    in >> levtmp >> ngrids >> gtime;
-    in >> levsteptmp;
-    amrex::Real glo[3] = {0.0, 0.0, 0.0};
-    amrex::Real ghi[3] = {0.0, 0.0, 0.0};
-    for (int igrid = 0; igrid < ngrids; ++igrid) {
-      for (int idim = 0; idim < spacedim; ++idim) {
-        in >> glo[idim] >> ghi[idim];
-      }
-    }
-    in >> relname;
-    if (ilev == level) {
-      break;
-    }
-    relname.clear();
-  }
-
-  if (!in || relname.empty()) {
-    debug1 << "[amrex-plugin] Failed to read MultiFab name for level "
-           << level << " from '" << headerPath << "'\n";
-    EXCEPTION1(InvalidFilesException, headerPath.c_str());
-  }
-
-  std::string mfName = JoinPath(plotfilePaths_[timeState], relname);
+  std::string mfName = plotfile->m_mf_name[level];
   mfNameCache_.emplace(key, mfName);
   return mfName;
 }
@@ -1179,6 +1121,9 @@ int avtamrexFileFormat::GetNTimesteps(void) {
 void avtamrexFileFormat::FreeUpResources(void) {
   debug1 << "[amrex-plugin] FreeUpResources\n";
   for (auto &entry : plotfileCache_) {
+    entry.reset();
+  }
+  for (auto &entry : plotfileImplCache_) {
     entry.reset();
   }
 

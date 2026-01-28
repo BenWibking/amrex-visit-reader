@@ -164,6 +164,22 @@ if(NOT VISIT_USE_VENDORED_MPICH)
 endif()
 FetchContent_MakeAvailable(amrex)
 
+set(AMREX_PATCH_STAMP "${CMAKE_CURRENT_BINARY_DIR}/amrex_patch.stamp")
+add_custom_command(
+    OUTPUT "${AMREX_PATCH_STAMP}"
+    COMMAND ${CMAKE_COMMAND}
+            -DAMREX_SOURCE_DIR=${amrex_SOURCE_DIR}
+            -DAMREX_PATCH_STAMP=${AMREX_PATCH_STAMP}
+            -P "${CMAKE_CURRENT_LIST_DIR}/cmake/apply_amrex_patch.cmake"
+    VERBATIM)
+add_custom_target(amrex_patch DEPENDS "${AMREX_PATCH_STAMP}")
+if(TARGET AMReX::amrex)
+    get_target_property(_amrex_target AMReX::amrex ALIASED_TARGET)
+    if(_amrex_target)
+        add_dependencies(${_amrex_target} amrex_patch)
+    endif()
+endif()
+
 set(CPPTRACE_BUILD_TESTING OFF CACHE BOOL "" FORCE)
 set(CPPTRACE_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
 set(CPPTRACE_BUILD_BENCHMARKING OFF CACHE BOOL "" FORCE)

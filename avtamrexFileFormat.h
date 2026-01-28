@@ -34,6 +34,7 @@ class vtkRectilinearGrid;
 class vtkIdTypeArray;
 
 namespace amrex {
+class PlotFileDataImpl;
 class VisMF;
 }
 
@@ -149,6 +150,8 @@ protected:
   std::vector<unsigned long long> iterationIndex_;
   mutable std::vector<double> timeValues_;
   mutable std::vector<std::shared_ptr<amrex::PlotFileData>> plotfileCache_;
+  mutable std::vector<std::shared_ptr<amrex::PlotFileDataImpl>>
+      plotfileImplCache_;
   mutable std::map<std::pair<int, int>, std::string> mfNameCache_;
   mutable std::map<VisMFCacheKey, std::shared_ptr<amrex::VisMF>> vismfCache_;
   mutable std::vector<VisMFClearEntry> vismfClearList_;
@@ -183,6 +186,7 @@ protected:
                               const std::string &meshName,
                               amrex::PlotFileData &plotfile);
   std::shared_ptr<amrex::PlotFileData> GetPlotFile(int timeState) const;
+  std::shared_ptr<amrex::PlotFileDataImpl> GetPlotFileImpl(int timeState) const;
   std::shared_ptr<amrex::VisMF> GetVisMF(int timeState, int level) const;
   void QueueVisMFClear(const VisMFCacheKey &key, int fabIndex,
                        int compIndex) const;
