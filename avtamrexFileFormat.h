@@ -147,7 +147,7 @@ protected:
     }
   };
 
-  using ParticleContainerType = amrex::ParticleContainerPureSoA<0, 0>;
+  using ParticleContainerType = amrex::ParticleContainer<0, 0>;
 
   struct ParticleSpeciesInfo {
     std::string meshName;
@@ -171,6 +171,7 @@ protected:
     std::string speciesName;
     std::vector<int> componentIndices;
     bool isReal{true};
+    bool isPosition{false};
   };
 
   struct ParticleCacheKey {
