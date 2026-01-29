@@ -19,6 +19,7 @@
 #include <vector>
 
 #include <AMReX_Box.H>
+#include <AMReX_ParticleContainer.H>
 #include <AMReX_PlotFileUtil.H>
 
 #include <DebugStream.h>
@@ -94,7 +95,7 @@ public:
   void GetCycles(std::vector<int> &) override;
   void GetTimes(std::vector<double> &) override;
 
-  enum class DatasetType { Field = 0 };
+  enum class DatasetType { Field = 0, Particle = 1 };
 
 protected:
   // NOTE: VisIt calls this reader from a single thread per instance.
@@ -146,6 +147,44 @@ protected:
     }
   };
 
+  using ParticleContainerType = amrex::ParticleContainerPureSoA<0, 0>;
+
+  struct ParticleSpeciesInfo {
+    std::string meshName;
+    std::string speciesName;
+    std::string baseMeshName;
+    std::vector<std::string> realComponents;
+    std::vector<std::string> intComponents;
+    int spatialDim{0};
+    bool legacyHeader{false};
+  };
+
+  struct ParticleVarInfo {
+    std::string meshName;
+    std::string speciesName;
+    int componentIndex{0};
+    bool isReal{true};
+  };
+
+  struct ParticleVectorVarInfo {
+    std::string meshName;
+    std::string speciesName;
+    std::vector<int> componentIndices;
+    bool isReal{true};
+  };
+
+  struct ParticleCacheKey {
+    int timeState{0};
+    std::string species;
+
+    bool operator<(const ParticleCacheKey &other) const {
+      if (timeState != other.timeState) {
+        return timeState < other.timeState;
+      }
+      return species < other.species;
+    }
+  };
+
   std::vector<std::string> plotfilePaths_;
   std::vector<unsigned long long> iterationIndex_;
   mutable std::vector<double> timeValues_;
@@ -162,6 +201,12 @@ protected:
   std::unordered_map<std::string, std::tuple<DatasetType, std::string>> meshMap_;
   std::vector<std::unordered_map<std::string, MeshPatchHierarchy>>
       meshHierarchyCache_;
+  std::vector<std::unordered_map<std::string, ParticleSpeciesInfo>>
+      particleSpeciesCache_;
+  std::unordered_map<std::string, ParticleVarInfo> particleVarMap_;
+  std::unordered_map<std::string, ParticleVectorVarInfo> particleVectorVarMap_;
+  mutable std::map<ParticleCacheKey, std::shared_ptr<ParticleContainerType>>
+      particleContainerCache_;
 
   void PopulateDatabaseMetaData(avtDatabaseMetaData *, int) override;
   void *GetAuxiliaryData(const char *var, int timestep, int domain,
@@ -172,6 +217,19 @@ protected:
   void PopulateHierarchyCache(int timeState);
   void BuildFieldHierarchy(avtDatabaseMetaData *md,
                            amrex::PlotFileData &plotfile, int timeState);
+  void BuildParticleHierarchy(avtDatabaseMetaData *md,
+                              amrex::PlotFileData &plotfile, int timeState);
+  std::shared_ptr<ParticleContainerType>
+  GetParticleContainer(int timeState, const std::string &species) const;
+  vtkDataSet *GetParticleMesh(int timeState, int domain,
+                              const ParticleSpeciesInfo &species,
+                              const MeshPatchHierarchy &hierarchy) const;
+  vtkDataArray *GetParticleVar(int timeState, int domain,
+                               const ParticleVarInfo &varInfo,
+                               const MeshPatchHierarchy &hierarchy) const;
+  vtkDataArray *GetParticleVectorVar(int timeState, int domain,
+                                     const ParticleVectorVarInfo &varInfo,
+                                     const MeshPatchHierarchy &hierarchy) const;
   MeshPatchHierarchy BuildHierarchyFromPlotfile(const std::string &visitMeshName,
                                                 amrex::PlotFileData &plotfile);
   std::pair<std::string, int>

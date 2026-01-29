@@ -14,7 +14,7 @@ import socket
 def resolve_dataset_path():
     """Return the dataset path from argv or fall back to the particle sample."""
     script_dir = os.path.abspath(os.path.dirname(__file__))
-    default_dataset = os.path.join(script_dir, "StarParticles", "plrd01000")
+    default_dataset = os.path.join(script_dir, "Nyx_LyA", "plt00000")
     dataset = default_dataset
     if len(sys.argv) > 1:
         dataset = sys.argv[1]
@@ -98,11 +98,26 @@ def render_plot(plot_type, var_name):
     GetLastError(1)
     AddPlot(plot_type, var_name)
     DrawPlots()
-    Query("MinMax")
+    query_result = None
+    if plot_type == "Mesh":
+        GetLastError(1)
+        Query("NumNodes")
+        last_error = GetLastError()
+        if last_error:
+            raise RuntimeError(last_error)
+        value = None
+        if "GetQueryOutputValue" in globals():
+            value = GetQueryOutputValue()
+        if value is None:
+            value = GetQueryOutputString()
+        query_result = f"NumNodes={value}"
+    else:
+        Query("MinMax")
     last_error = GetLastError()
     if last_error:
         raise RuntimeError(last_error)
     DeleteActivePlots()
+    return query_result
 
 
 def main():
@@ -135,8 +150,11 @@ def main():
         print(f"  Vectors: {vector_vars}")
 
         try:
-            render_plot("Mesh", mesh_name)
-            print(f"OK: Mesh {mesh_name}")
+            mesh_count = render_plot("Mesh", mesh_name)
+            if mesh_count:
+                print(f"OK: Mesh {mesh_name} (NumPoints: {mesh_count})")
+            else:
+                print(f"OK: Mesh {mesh_name}")
         except Exception as exc:
             failures.append((mesh_name, f"mesh render failed: {exc}"))
             print(f"FAIL: Mesh {mesh_name} -> {exc}")
