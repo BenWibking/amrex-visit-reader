@@ -2219,7 +2219,11 @@ vtkDataArray *avtamrexFileFormat::LoadScalarPatchData(
 
   const amrex::FArrayBox &fab = vismf->GetFab(patch.fabIndex, compIndex);
   QueueVisMFClear({timeState, patch.level}, patch.fabIndex, compIndex);
-  if (compIndex < 0 || compIndex >= fab.nComp()) {
+  int fabComp = compIndex;
+  if (fab.nComp() == 1 && compIndex != 0) {
+    // VisMF::GetFab(fab, comp) returns a single-component FArrayBox.
+    fabComp = 0;
+  } else if (compIndex < 0 || compIndex >= fab.nComp()) {
     debug1 << "[amrex-plugin] LoadScalarPatchData component index "
            << compIndex << " out of range for fab nComp=" << fab.nComp()
            << "\n";
@@ -2250,7 +2254,6 @@ vtkDataArray *avtamrexFileFormat::LoadScalarPatchData(
   const int fabNx = box.length(0);
   const int fabNy = box.length(1);
   const int fabNz = box.length(2);
-  const int fabComp = compIndex;
   const amrex::Real *src = fab.dataPtr(fabComp);
 
   if (nx == fabNx && ny == fabNy && nz == fabNz) {

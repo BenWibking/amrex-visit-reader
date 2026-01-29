@@ -80,23 +80,40 @@ def main():
     print(f"Parallel engine ranks: {props.numProcessors}")
 
     OpenDatabase(dataset, 0, "amrex-plotfile")
-    scalar_var = pick_scalar_variable(dataset)
-    print(f"Using scalar variable: {scalar_var}")
+    metadata = GetMetaData(dataset)
+    scalar_names = [
+        metadata.GetScalars(i).name for i in range(metadata.GetNumScalars())
+    ]
+    print(f"Scalar variables reported: {scalar_names}")
 
-    AddPlot("Pseudocolor", scalar_var)
-    DrawPlots()
+    if not scalar_names:
+        print("FAIL: No scalar variables found in the dataset.")
+        return
 
-    Query("NumZones")
-    zones = GetQueryOutputValue()
-    if isinstance(zones, (list, tuple)):
-        zones = zones[0]
-    zones = float(zones)
-    print(f"Zone count reported: {zones}")
+    failures = []
+    for name in scalar_names:
+        try:
+            GetLastError(1)
+            AddPlot("Pseudocolor", name)
+            DrawPlots()
+            Query("MinMax")
+            last_error = GetLastError()
+            if last_error:
+                raise RuntimeError(last_error)
+            DeleteActivePlots()
+            print(f"OK: {name}")
+        except Exception as exc:
+            failures.append((name, str(exc)))
+            print(f"FAIL: {name} -> {exc}")
+            DeleteActivePlots()
 
-    if zones > 0 and props.numProcessors >= 2:
-        print("PASS: Plotfile opened and queried on a parallel engine.")
+    if failures:
+        print("FAILED VARIABLES:")
+        for name, msg in failures:
+            print(f"  {name}: {msg}")
+        print("FAIL: One or more variables failed to render.")
     else:
-        print("FAIL: Plotfile open/query did not succeed on parallel engine.")
+        print("PASS: All scalar variables rendered and queried.")
 
     DeleteAllPlots()
 
