@@ -49,6 +49,7 @@
 #include <vtkPointData.h>
 #include <vtkRectilinearGrid.h>
 #include <vtkIntArray.h>
+#include <vtkLongLongArray.h>
 #include <vtkSmartPointer.h>
 #include <vtkUnsignedCharArray.h>
 #include <vtkIdTypeArray.h>
@@ -817,10 +818,35 @@ struct ParticleBlock {
   int numInt{0};
   int spatialDim{0};
   bool isSingle{false};
-  std::vector<int> intData;
+  int intBytes{0};
+  std::vector<long long> intData;
   std::vector<float> realDataSingle;
   std::vector<double> realDataDouble;
 };
+
+inline long long NextParticleOffsetForFile(
+    const avtamrexFileFormat::ParticleHeaderInfo &header, int level,
+    int fileNum, long long offset) {
+  long long nextOffset = -1;
+  if (level < 0 ||
+      static_cast<size_t>(level) >= header.fileNums.size() ||
+      static_cast<size_t>(level) >= header.offsets.size()) {
+    return nextOffset;
+  }
+  const auto &fileNums = header.fileNums[static_cast<size_t>(level)];
+  const auto &offsets = header.offsets[static_cast<size_t>(level)];
+  for (size_t grid = 0; grid < fileNums.size(); ++grid) {
+    if (fileNums[grid] != fileNum) {
+      continue;
+    }
+    const long long candidate = offsets[grid];
+    if (candidate > offset &&
+        (nextOffset < 0 || candidate < nextOffset)) {
+      nextOffset = candidate;
+    }
+  }
+  return nextOffset;
+}
 
 inline bool PathExists(const std::string &path);
 inline std::string JoinPath(const std::string &parent,
@@ -1052,18 +1078,64 @@ inline bool ReadParticleBlock(const avtamrexFileFormat::ParticleSpeciesInfo &spe
     error = "Failed to open particle data file '" + filePath + "'.";
     return false;
   }
+  in.seekg(0, std::ios::end);
+  const long long fileSize = static_cast<long long>(in.tellg());
   in.seekg(offset, std::ios::beg);
   if (!in) {
     error = "Failed to seek particle data file '" + filePath + "'.";
     return false;
   }
 
+  const long long nextOffset =
+      NextParticleOffsetForFile(header, level, fileNum, offset);
+  long long availableBytes = -1;
+  if (nextOffset > offset) {
+    availableBytes = nextOffset - offset;
+  } else if (fileSize >= 0) {
+    availableBytes = fileSize - offset;
+  }
+
+  const long long realBytes =
+      (block.isSingle ? 4LL : 8LL) *
+      static_cast<long long>(block.numReal) *
+      static_cast<long long>(count);
+  if (availableBytes >= 0 && availableBytes < realBytes) {
+    error = "Particle data file '" + filePath + "' is truncated.";
+    return false;
+  }
+
+  int intBytes = static_cast<int>(sizeof(long long));
+  if (block.numInt > 0 && availableBytes >= 0) {
+    const long long intBytesTotal = availableBytes - realBytes;
+    const long long denom =
+        static_cast<long long>(block.numInt) * static_cast<long long>(count);
+    if (intBytesTotal >= 0 && denom > 0 && intBytesTotal % denom == 0) {
+      const long long candidate = intBytesTotal / denom;
+      if (candidate == 4 || candidate == 8) {
+        intBytes = static_cast<int>(candidate);
+      }
+    }
+  }
+  block.intBytes = intBytes;
+
   if (block.numInt > 0) {
     block.intData.resize(static_cast<size_t>(block.numInt) *
                          static_cast<size_t>(count));
-    const auto bytes = static_cast<std::streamsize>(sizeof(int) *
-        static_cast<size_t>(block.numInt) * static_cast<size_t>(count));
-    in.read(reinterpret_cast<char *>(block.intData.data()), bytes);
+    const size_t intCount =
+        static_cast<size_t>(block.numInt) * static_cast<size_t>(count);
+    const auto bytes = static_cast<std::streamsize>(
+        static_cast<size_t>(block.intBytes) * intCount);
+    if (block.intBytes == 8) {
+      in.read(reinterpret_cast<char *>(block.intData.data()), bytes);
+    } else {
+      std::vector<int32_t> tmp(intCount);
+      in.read(reinterpret_cast<char *>(tmp.data()), bytes);
+      if (in) {
+        for (size_t i = 0; i < intCount; ++i) {
+          block.intData[i] = static_cast<long long>(tmp[i]);
+        }
+      }
+    }
     if (!in) {
       error = "Failed to read particle integer data from '" + filePath + "'.";
       return false;
@@ -1863,8 +1935,13 @@ vtkDataArray *avtamrexFileFormat::GetParticleVar(
       array = arr;
     }
   } else {
-    vtkNew<vtkIntArray> arr;
-    array = arr;
+    if (block.intBytes == 8) {
+      vtkNew<vtkLongLongArray> arr;
+      array = arr;
+    } else {
+      vtkNew<vtkIntArray> arr;
+      array = arr;
+    }
   }
 
   array->SetNumberOfComponents(1);
@@ -1886,10 +1963,19 @@ vtkDataArray *avtamrexFileFormat::GetParticleVar(
         }
       }
     } else {
-      int *buffer = static_cast<int *>(array->GetVoidPointer(0));
-      const int *ints = block.intData.data();
-      for (int i = 0; i < block.count; ++i) {
-        buffer[i] = ints[i * block.numInt + varInfo.componentIndex];
+      if (array->GetDataType() == VTK_LONG_LONG) {
+        auto *buffer = static_cast<long long *>(array->GetVoidPointer(0));
+        const long long *ints = block.intData.data();
+        for (int i = 0; i < block.count; ++i) {
+          buffer[i] = ints[i * block.numInt + varInfo.componentIndex];
+        }
+      } else {
+        int *buffer = static_cast<int *>(array->GetVoidPointer(0));
+        const long long *ints = block.intData.data();
+        for (int i = 0; i < block.count; ++i) {
+          buffer[i] = static_cast<int>(
+              ints[i * block.numInt + varInfo.componentIndex]);
+        }
       }
     }
   }
@@ -2000,8 +2086,13 @@ vtkDataArray *avtamrexFileFormat::GetParticleVectorVar(
       array = arr;
     }
   } else {
-    vtkNew<vtkIntArray> arr;
-    array = arr;
+    if (block.intBytes == 8) {
+      vtkNew<vtkLongLongArray> arr;
+      array = arr;
+    } else {
+      vtkNew<vtkIntArray> arr;
+      array = arr;
+    }
   }
 
   const int numComponents = static_cast<int>(varInfo.componentIndices.size());
@@ -2034,13 +2125,26 @@ vtkDataArray *avtamrexFileFormat::GetParticleVectorVar(
         }
       }
     } else {
-      int *buffer = static_cast<int *>(array->GetVoidPointer(0));
-      const int *ints = block.intData.data();
-      for (int i = 0; i < block.count; ++i) {
-        vtkIdType base = static_cast<vtkIdType>(i) * numComponents;
-        const int src = i * block.numInt;
-        for (int c = 0; c < numComponents; ++c) {
-          buffer[base + c] = ints[src + varInfo.componentIndices[c]];
+      if (array->GetDataType() == VTK_LONG_LONG) {
+        auto *buffer = static_cast<long long *>(array->GetVoidPointer(0));
+        const long long *ints = block.intData.data();
+        for (int i = 0; i < block.count; ++i) {
+          vtkIdType base = static_cast<vtkIdType>(i) * numComponents;
+          const int src = i * block.numInt;
+          for (int c = 0; c < numComponents; ++c) {
+            buffer[base + c] = ints[src + varInfo.componentIndices[c]];
+          }
+        }
+      } else {
+        int *buffer = static_cast<int *>(array->GetVoidPointer(0));
+        const long long *ints = block.intData.data();
+        for (int i = 0; i < block.count; ++i) {
+          vtkIdType base = static_cast<vtkIdType>(i) * numComponents;
+          const int src = i * block.numInt;
+          for (int c = 0; c < numComponents; ++c) {
+            buffer[base + c] = static_cast<int>(
+                ints[src + varInfo.componentIndices[c]]);
+          }
         }
       }
     }
