@@ -120,6 +120,49 @@ def render_plot(plot_type, var_name):
     return query_result
 
 
+def query_minmax(plot_type, var_name):
+    GetLastError(1)
+    AddPlot(plot_type, var_name)
+    DrawPlots()
+    Query("MinMax")
+    last_error = GetLastError()
+    if last_error:
+        raise RuntimeError(last_error)
+    value = None
+    if "GetQueryOutputValue" in globals():
+        value = GetQueryOutputValue()
+    if value is None:
+        value = GetQueryOutputString()
+    DeleteActivePlots()
+    return value
+
+
+def get_vector_component_count(var_meta):
+    for attr in ("numComponents", "ncomponents", "nComponents",
+                 "vectorDim", "vectorDimension", "dim", "dimension"):
+        try:
+            value = getattr(var_meta, attr)
+        except Exception:
+            continue
+        if isinstance(value, int) and value > 0:
+            return value
+    return 3
+
+
+def sanitize_expr_name(name):
+    return name.replace("/", "_").replace(":", "_").replace(".", "_")
+
+
+def define_vector_component_expr(base_name, comp_index, defined):
+    expr_name = f"{sanitize_expr_name(base_name)}_c{comp_index}"
+    if expr_name in defined:
+        return expr_name
+    # Use angle brackets so VisIt parses paths with slashes as a single var.
+    DefineScalarExpression(expr_name, f"<{base_name}>[{comp_index}]")
+    defined.add(expr_name)
+    return expr_name
+
+
 def main():
     dataset = resolve_dataset_path()
     print(f"Opening dataset: {dataset}")
@@ -141,6 +184,7 @@ def main():
         return
 
     failures = []
+    defined_expressions = set()
     for mesh in point_meshes:
         mesh_name = mesh.name
         scalar_vars = vars_for_mesh(metadata, "Scalars", mesh_name)
@@ -161,25 +205,37 @@ def main():
             DeleteActivePlots()
             continue
 
-        plot_var = None
-        if scalar_vars:
-            plot_var = scalar_vars[0]
-            plot_type = "Pseudocolor"
-        elif vector_vars:
-            plot_var = vector_vars[0]
-            plot_type = "Vector"
-
-        if plot_var is None:
+        if not scalar_vars and not vector_vars:
             print(f"WARN: No per-particle variables found for {mesh_name}.")
             continue
 
-        try:
-            render_plot(plot_type, plot_var)
-            print(f"OK: {plot_type} {plot_var}")
-        except Exception as exc:
-            failures.append((plot_var, str(exc)))
-            print(f"FAIL: {plot_type} {plot_var} -> {exc}")
-            DeleteActivePlots()
+        for scalar_var in scalar_vars:
+            try:
+                result = query_minmax("Pseudocolor", scalar_var)
+                print(f"OK: MinMax {scalar_var} -> {result}")
+            except Exception as exc:
+                failures.append((scalar_var, f"min/max failed: {exc}"))
+                print(f"FAIL: MinMax {scalar_var} -> {exc}")
+                DeleteActivePlots()
+
+        for vector_var in vector_vars:
+            meta = None
+            for var_meta in iter_metadata_items(metadata, "Vectors"):
+                if var_meta.name == vector_var:
+                    meta = var_meta
+                    break
+            num_components = get_vector_component_count(meta) if meta else 3
+            for comp in range(num_components):
+                expr_name = define_vector_component_expr(
+                    vector_var, comp, defined_expressions)
+                try:
+                    result = query_minmax("Pseudocolor", expr_name)
+                    print(f"OK: MinMax {vector_var}[{comp}] -> {result}")
+                except Exception as exc:
+                    failures.append(
+                        (f"{vector_var}[{comp}]", f"min/max failed: {exc}"))
+                    print(f"FAIL: MinMax {vector_var}[{comp}] -> {exc}")
+                    DeleteActivePlots()
 
     if failures:
         print("FAILED PARTICLE PLOTS:")

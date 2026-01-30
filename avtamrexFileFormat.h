@@ -213,6 +213,7 @@ protected:
       meshHierarchyCache_;
   std::vector<std::unordered_map<std::string, ParticleSpeciesInfo>>
       particleSpeciesCache_;
+  std::vector<bool> particleHierarchyInitialized_;
   std::unordered_map<std::string, ParticleVarInfo> particleVarMap_;
   std::unordered_map<std::string, ParticleVectorVarInfo> particleVectorVarMap_;
 
@@ -222,6 +223,7 @@ protected:
                          DestructorFunction &) override;
 
   void EnsureHierarchyInitialized(int timeState);
+  void EnsureParticleHierarchyInitialized(int timeState);
   void PopulateHierarchyCache(int timeState);
   void BuildFieldHierarchy(avtDatabaseMetaData *md,
                            amrex::PlotFileData &plotfile, int timeState);
