@@ -19,7 +19,6 @@
 #include <vector>
 
 #include <AMReX_Box.H>
-#include <AMReX_ParticleContainer.H>
 #include <AMReX_PlotFileUtil.H>
 
 #include <DebugStream.h>
@@ -97,6 +96,39 @@ public:
 
   enum class DatasetType { Field = 0, Particle = 1 };
 
+  struct ParticleHeaderInfo {
+    int spatialDim{0};
+    int numRealExtra{0};
+    int numIntExtra{0};
+    int numReal{0};
+    int numInt{0};
+    int finestLevel{0};
+    bool isCheckpoint{false};
+    bool isSingle{false};
+    bool legacy{false};
+    long long numParticles{0};
+    long long nextId{0};
+    std::string version;
+    std::vector<std::string> realNames;
+    std::vector<std::string> intNames;
+    std::vector<int> numGrids;
+    std::vector<std::vector<int>> fileNums;
+    std::vector<std::vector<int>> particleCounts;
+    std::vector<std::vector<long long>> offsets;
+  };
+
+  struct ParticleSpeciesInfo {
+    std::string meshName;
+    std::string speciesName;
+    std::string baseMeshName;
+    std::vector<std::string> realComponents;
+    std::vector<std::string> intComponents;
+    ParticleHeaderInfo header;
+    std::string speciesDir;
+    int spatialDim{0};
+    bool legacyHeader{false};
+  };
+
 protected:
   // NOTE: VisIt calls this reader from a single thread per instance.
   // The internal caches are not thread-safe by design.
@@ -147,18 +179,6 @@ protected:
     }
   };
 
-  using ParticleContainerType = amrex::ParticleContainer<0, 0>;
-
-  struct ParticleSpeciesInfo {
-    std::string meshName;
-    std::string speciesName;
-    std::string baseMeshName;
-    std::vector<std::string> realComponents;
-    std::vector<std::string> intComponents;
-    int spatialDim{0};
-    bool legacyHeader{false};
-  };
-
   struct ParticleVarInfo {
     std::string meshName;
     std::string speciesName;
@@ -174,17 +194,6 @@ protected:
     bool isPosition{false};
   };
 
-  struct ParticleCacheKey {
-    int timeState{0};
-    std::string species;
-
-    bool operator<(const ParticleCacheKey &other) const {
-      if (timeState != other.timeState) {
-        return timeState < other.timeState;
-      }
-      return species < other.species;
-    }
-  };
 
   std::vector<std::string> plotfilePaths_;
   std::vector<unsigned long long> iterationIndex_;
@@ -206,8 +215,6 @@ protected:
       particleSpeciesCache_;
   std::unordered_map<std::string, ParticleVarInfo> particleVarMap_;
   std::unordered_map<std::string, ParticleVectorVarInfo> particleVectorVarMap_;
-  mutable std::map<ParticleCacheKey, std::shared_ptr<ParticleContainerType>>
-      particleContainerCache_;
 
   void PopulateDatabaseMetaData(avtDatabaseMetaData *, int) override;
   void *GetAuxiliaryData(const char *var, int timestep, int domain,
@@ -220,8 +227,6 @@ protected:
                            amrex::PlotFileData &plotfile, int timeState);
   void BuildParticleHierarchy(avtDatabaseMetaData *md,
                               amrex::PlotFileData &plotfile, int timeState);
-  std::shared_ptr<ParticleContainerType>
-  GetParticleContainer(int timeState, const std::string &species) const;
   vtkDataSet *GetParticleMesh(int timeState, int domain,
                               const ParticleSpeciesInfo &species,
                               const MeshPatchHierarchy &hierarchy) const;

@@ -24,6 +24,7 @@
 #endif
 #include <functional>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <limits>
 #include <map>
@@ -526,22 +527,11 @@ inline std::string JoinStrings(const std::vector<std::string> &values) {
   return oss.str();
 }
 
-struct ParticleHeaderInfo {
-  int spatialDim{0};
-  int numReal{0};
-  int numInt{0};
-  int finestLevel{0};
-  std::string version;
-  bool legacy{false};
-  std::vector<std::string> realNames;
-  std::vector<std::string> intNames;
-};
-
 inline bool ParseParticleHeader(const std::string &headerPath,
-                                ParticleHeaderInfo &info,
+                                avtamrexFileFormat::ParticleHeaderInfo &info,
                                 std::string &error) {
   error.clear();
-  info = ParticleHeaderInfo{};
+  info = avtamrexFileFormat::ParticleHeaderInfo{};
 
   std::ifstream header(headerPath);
   if (!header.is_open()) {
@@ -565,6 +555,7 @@ inline bool ParseParticleHeader(const std::string &headerPath,
   const std::string &version = tokens[0];
   info.version = version;
   const bool hasVersionPrefix = (version.rfind("Version_", 0) == 0);
+  info.isSingle = (version.find("single") != std::string::npos);
 
   auto parseInt = [&](size_t idx, int &value) -> bool {
     if (idx >= tokens.size()) {
@@ -601,6 +592,7 @@ inline bool ParseParticleHeader(const std::string &headerPath,
     if (nr < 0 || tokens.size() < idx + static_cast<size_t>(nr) + 1) {
       return false;
     }
+    const int numRealExtra = nr;
     std::vector<std::string> realNames;
     realNames.reserve(static_cast<size_t>(nr));
     for (int i = 0; i < nr; ++i) {
@@ -614,6 +606,7 @@ inline bool ParseParticleHeader(const std::string &headerPath,
     if (ni < 0 || tokens.size() < idx + static_cast<size_t>(ni) + 3) {
       return false;
     }
+    const int numIntExtra = ni;
     std::vector<std::string> intNames;
     intNames.reserve(static_cast<size_t>(ni));
     for (int i = 0; i < ni; ++i) {
@@ -646,15 +639,70 @@ inline bool ParseParticleHeader(const std::string &headerPath,
       return false;
     }
 
+    std::vector<int> numGrids;
+    numGrids.reserve(static_cast<size_t>(finestLevel + 1));
+    long long totalGrids = 0;
+    for (int lev = 0; lev <= finestLevel; ++lev) {
+      int ngrids = 0;
+      if (!parseInt(idx, ngrids)) {
+        return false;
+      }
+      ++idx;
+      if (ngrids < 0) {
+        return false;
+      }
+      numGrids.push_back(ngrids);
+      totalGrids += ngrids;
+    }
+
+    std::vector<std::vector<int>> fileNums;
+    std::vector<std::vector<int>> particleCounts;
+    std::vector<std::vector<long long>> offsets;
+    fileNums.resize(static_cast<size_t>(finestLevel + 1));
+    particleCounts.resize(static_cast<size_t>(finestLevel + 1));
+    offsets.resize(static_cast<size_t>(finestLevel + 1));
+
+    for (int lev = 0; lev <= finestLevel; ++lev) {
+      fileNums[lev].reserve(static_cast<size_t>(numGrids[lev]));
+      particleCounts[lev].reserve(static_cast<size_t>(numGrids[lev]));
+      offsets[lev].reserve(static_cast<size_t>(numGrids[lev]));
+      for (int grid = 0; grid < numGrids[lev]; ++grid) {
+        int fileNum = 0;
+        int count = 0;
+        long long offset = 0;
+        if (!parseInt(idx, fileNum)) {
+          return false;
+        }
+        ++idx;
+        if (!parseInt(idx, count)) {
+          return false;
+        }
+        ++idx;
+        if (!parseLong(idx, offset)) {
+          return false;
+        }
+        ++idx;
+        fileNums[lev].push_back(fileNum);
+        particleCounts[lev].push_back(count);
+        offsets[lev].push_back(offset);
+      }
+    }
+
     info.spatialDim = dm;
-    info.numReal = nr;
-    info.numInt = ni;
+    info.numRealExtra = numRealExtra;
+    info.numIntExtra = numIntExtra;
+    info.numReal = dm + numRealExtra;
+    info.numInt = 2 * (checkpointFlag != 0) + numIntExtra;
+    info.isCheckpoint = (checkpointFlag != 0);
     info.finestLevel = finestLevel;
+    info.numParticles = numParticles;
+    info.nextId = maxNextId;
     info.realNames = std::move(realNames);
     info.intNames = std::move(intNames);
-    (void)checkpointFlag;
-    (void)numParticles;
-    (void)maxNextId;
+    info.numGrids = std::move(numGrids);
+    info.fileNums = std::move(fileNums);
+    info.particleCounts = std::move(particleCounts);
+    info.offsets = std::move(offsets);
     return true;
   };
 
@@ -707,10 +755,15 @@ inline bool ParseParticleHeader(const std::string &headerPath,
     }
 
     info.spatialDim = dm;
-    info.numReal = nr;
+    info.numRealExtra = nr;
+    info.numIntExtra = 0;
+    info.numReal = dm + nr;
     info.numInt = 0;
     info.finestLevel = finestLevel;
     info.legacy = true;
+    info.isCheckpoint = false;
+    info.numParticles = numParticles;
+    info.nextId = maxNextId;
     info.realNames.clear();
     info.realNames.reserve(static_cast<size_t>(std::max(0, nr)));
     for (int i = 0; i < nr; ++i) {
@@ -719,8 +772,6 @@ inline bool ParseParticleHeader(const std::string &headerPath,
       info.realNames.push_back(name.str());
     }
     info.intNames.clear();
-    (void)numParticles;
-    (void)maxNextId;
     return true;
   };
 
@@ -754,6 +805,17 @@ struct LegacyParticleBlock {
   int spatialDim{0};
   std::vector<double> positions;
   std::vector<double> extras;
+};
+
+struct ParticleBlock {
+  int count{0};
+  int numReal{0};
+  int numInt{0};
+  int spatialDim{0};
+  bool isSingle{false};
+  std::vector<int> intData;
+  std::vector<float> realDataSingle;
+  std::vector<double> realDataDouble;
 };
 
 inline bool PathExists(const std::string &path);
@@ -916,6 +978,111 @@ inline bool ReadLegacyParticleBlock(const std::string &speciesDir,
         block.extras[i * block.extraComps + c] =
             buffer[base + header.spatialDim + c];
       }
+    }
+  }
+
+  return true;
+}
+
+inline std::string ParticleDataFileName(const std::string &prefix, int level,
+                                        int fileNum) {
+  std::ostringstream ss;
+  ss << prefix << "/Level_" << level << "/DATA_";
+  ss << std::setfill('0') << std::setw(5) << fileNum;
+  return ss.str();
+}
+
+inline bool ReadParticleBlock(const avtamrexFileFormat::ParticleSpeciesInfo &species,
+                              int level, int gridIndex,
+                              ParticleBlock &block, std::string &error) {
+  error.clear();
+  block = ParticleBlock{};
+
+  const auto &header = species.header;
+  if (level < 0 || level > header.finestLevel) {
+    error = "Particle level out of range.";
+    return false;
+  }
+  if (static_cast<size_t>(level) >= header.fileNums.size() ||
+      static_cast<size_t>(level) >= header.particleCounts.size() ||
+      static_cast<size_t>(level) >= header.offsets.size()) {
+    error = "Particle header missing level metadata.";
+    return false;
+  }
+  if (gridIndex < 0 ||
+      gridIndex >= static_cast<int>(header.fileNums[level].size())) {
+    error = "Particle grid index out of range.";
+    return false;
+  }
+
+  const int fileNum = header.fileNums[level][gridIndex];
+  const int count = header.particleCounts[level][gridIndex];
+  const long long offset = header.offsets[level][gridIndex];
+  block.count = count;
+  block.numReal = header.numReal;
+  block.numInt = header.numInt;
+  block.spatialDim = header.spatialDim;
+  block.isSingle = header.isSingle;
+
+  if (count <= 0) {
+    return true;
+  }
+
+  std::string filePath = ParticleDataFileName(species.speciesDir, level, fileNum);
+  if (!PathExists(filePath)) {
+    std::ostringstream ss;
+    ss << species.speciesDir << "/Level_" << level << "/DATA_"
+       << std::setfill('0') << std::setw(4) << fileNum;
+    std::string altPath = ss.str();
+    if (PathExists(altPath)) {
+      filePath = altPath;
+    }
+  }
+  if (!PathExists(filePath)) {
+    error = "Particle data file missing: '" + filePath + "'.";
+    return false;
+  }
+
+  std::ifstream in(filePath, std::ios::in | std::ios::binary);
+  if (!in.is_open()) {
+    error = "Failed to open particle data file '" + filePath + "'.";
+    return false;
+  }
+  in.seekg(offset, std::ios::beg);
+  if (!in) {
+    error = "Failed to seek particle data file '" + filePath + "'.";
+    return false;
+  }
+
+  if (block.numInt > 0) {
+    block.intData.resize(static_cast<size_t>(block.numInt) *
+                         static_cast<size_t>(count));
+    const auto bytes = static_cast<std::streamsize>(sizeof(int) *
+        static_cast<size_t>(block.numInt) * static_cast<size_t>(count));
+    in.read(reinterpret_cast<char *>(block.intData.data()), bytes);
+    if (!in) {
+      error = "Failed to read particle integer data from '" + filePath + "'.";
+      return false;
+    }
+  }
+
+  const size_t realCount =
+      static_cast<size_t>(block.numReal) * static_cast<size_t>(count);
+  if (block.isSingle) {
+    block.realDataSingle.resize(realCount);
+    const auto bytes = static_cast<std::streamsize>(sizeof(float) * realCount);
+    in.read(reinterpret_cast<char *>(block.realDataSingle.data()), bytes);
+    if (!in) {
+      error = "Failed to read particle float data from '" + filePath + "'.";
+      return false;
+    }
+  } else {
+    block.realDataDouble.resize(realCount);
+    const auto bytes = static_cast<std::streamsize>(sizeof(double) * realCount);
+    in.read(reinterpret_cast<char *>(block.realDataDouble.data()), bytes);
+    if (!in) {
+      error = "Failed to read particle double data from '" + filePath + "'.";
+      return false;
     }
   }
 
@@ -1476,87 +1643,6 @@ avtamrexFileFormat::GetVisMF(int timeState, int level) const {
   return vismf;
 }
 
-std::shared_ptr<avtamrexFileFormat::ParticleContainerType>
-avtamrexFileFormat::GetParticleContainer(int timeState,
-                                         const std::string &species) const {
-  ParticleCacheKey key{timeState, species};
-  auto it = particleContainerCache_.find(key);
-  if (it != particleContainerCache_.end()) {
-    return it->second;
-  }
-
-  if (timeState < 0 ||
-      timeState >= static_cast<int>(particleSpeciesCache_.size())) {
-    EXCEPTION1(InvalidVariableException, "timestep out of range");
-  }
-
-  auto speciesIt = particleSpeciesCache_.at(timeState).find(species);
-  if (speciesIt == particleSpeciesCache_.at(timeState).end()) {
-    EXCEPTION1(InvalidVariableException, species.c_str());
-  }
-
-  const auto &speciesInfo = speciesIt->second;
-  debug2 << "[amrex-plugin] GetParticleContainer species='" << species
-         << "' timeState=" << timeState
-         << " real=" << speciesInfo.realComponents.size()
-         << " int=" << speciesInfo.intComponents.size()
-         << " legacy=" << speciesInfo.legacyHeader << "\n";
-  auto plotfile = GetPlotFile(timeState);
-  int finestLevel = plotfile->finestLevel();
-
-  amrex::Vector<amrex::Geometry> geom;
-  amrex::Vector<amrex::DistributionMapping> dmap;
-  amrex::Vector<amrex::BoxArray> ba;
-  amrex::Vector<int> rr;
-  geom.reserve(static_cast<size_t>(finestLevel + 1));
-  dmap.reserve(static_cast<size_t>(finestLevel + 1));
-  ba.reserve(static_cast<size_t>(finestLevel + 1));
-  if (finestLevel > 0) {
-    rr.reserve(static_cast<size_t>(finestLevel));
-  }
-
-  auto probLo = plotfile->probLo();
-  auto probHi = plotfile->probHi();
-  amrex::RealBox realBox(probLo.data(), probHi.data());
-  amrex::Array<int, AMREX_SPACEDIM> isPer;
-  isPer.fill(0);
-
-  for (int level = 0; level <= finestLevel; ++level) {
-    geom.emplace_back(plotfile->probDomain(level), realBox,
-                      plotfile->coordSys(), isPer);
-    ba.emplace_back(plotfile->boxArray(level));
-    dmap.emplace_back(plotfile->DistributionMap(level));
-    if (level < finestLevel) {
-      rr.push_back(plotfile->refRatio(level));
-    }
-  }
-
-  auto container =
-      std::make_shared<ParticleContainerType>(geom, dmap, ba, rr);
-  int runtimeReal =
-      static_cast<int>(speciesIt->second.realComponents.size());
-  int runtimeInt =
-      static_cast<int>(speciesIt->second.intComponents.size());
-  debug2 << "[amrex-plugin] GetParticleContainer runtime comps real="
-         << runtimeReal << " int=" << runtimeInt
-         << " finestLevel=" << finestLevel << "\n";
-  container->ResizeRuntimeRealComp(runtimeReal, false);
-  container->ResizeRuntimeIntComp(runtimeInt, false);
-
-  if (speciesInfo.legacyHeader) {
-    EXCEPTION1(InvalidFilesException,
-               "Legacy particle headers are not supported by AMReX Restart.");
-  }
-
-  debug2 << "[amrex-plugin] GetParticleContainer Restart dir='"
-         << plotfilePaths_[timeState] << "' species='" << species << "'\n";
-  container->Restart(plotfilePaths_[timeState], species);
-  debug2 << "[amrex-plugin] GetParticleContainer Restart done total="
-         << container->TotalNumberOfParticles() << "\n";
-  particleContainerCache_.emplace(key, container);
-  return container;
-}
-
 vtkDataSet *avtamrexFileFormat::GetParticleMesh(
     int timeState, int domain, const ParticleSpeciesInfo &species,
     const MeshPatchHierarchy &hierarchy) const {
@@ -1620,25 +1706,16 @@ vtkDataSet *avtamrexFileFormat::GetParticleMesh(
     dataset->Register(nullptr);
     return dataset;
   }
-  auto container = GetParticleContainer(timeState, species.speciesName);
-  if (!container) {
-    EXCEPTION1(InvalidVariableException, species.meshName.c_str());
+  ParticleBlock block;
+  std::string readError;
+  if (!ReadParticleBlock(species, patch.level, patch.fabIndex, block, readError)) {
+    debug1 << "[amrex-plugin] " << readError << "\n";
+    EXCEPTION1(InvalidFilesException, species.meshName.c_str());
   }
-
-  vtkIdType total = 0;
-  for (ParticleContainerType::ParConstIterType pti(*container, patch.level);
-       pti.isValid(); ++pti) {
-    if (pti.index() != patch.fabIndex) {
-      continue;
-    }
-    total += static_cast<vtkIdType>(pti.numParticles());
-  }
-  debug2 << "[amrex-plugin] GetParticleMesh particle count total=" << total
-         << "\n";
 
   vtkNew<vtkPoints> points;
   vtkSmartPointer<vtkDataArray> coords;
-  if (std::is_same<amrex::ParticleReal, float>::value) {
+  if (block.isSingle) {
     vtkNew<vtkFloatArray> arr;
     coords = arr;
   } else {
@@ -1646,94 +1723,31 @@ vtkDataSet *avtamrexFileFormat::GetParticleMesh(
     coords = arr;
   }
   coords->SetNumberOfComponents(3);
-  coords->SetNumberOfTuples(total);
+  coords->SetNumberOfTuples(block.count);
 
-  int spatialDim = species.spatialDim > 0
-                       ? std::min(species.spatialDim, AMREX_SPACEDIM)
-                       : AMREX_SPACEDIM;
-  vtkIdType offset = 0;
-  if (total > 0) {
+  const int spatialDim = block.spatialDim > 0
+                             ? std::min(block.spatialDim, AMREX_SPACEDIM)
+                             : AMREX_SPACEDIM;
+  if (block.count > 0) {
     if (coords->GetDataType() == VTK_FLOAT) {
       float *buffer = static_cast<float *>(coords->GetVoidPointer(0));
-      for (ParticleContainerType::ParConstIterType pti(*container, patch.level);
-           pti.isValid(); ++pti) {
-        if (pti.index() != patch.fabIndex) {
-          continue;
-        }
-        const int np = pti.numParticles();
-        if constexpr (ParticleContainerType::ParticleType::is_soa_particle) {
-          const auto &soa = pti.GetStructOfArrays();
-          const auto &x = soa.GetRealData(0);
-          const ParticleContainerType::SoA::RealVector *y = nullptr;
-          const ParticleContainerType::SoA::RealVector *z = nullptr;
-          if (spatialDim > 1) {
-            y = &soa.GetRealData(1);
-          }
-          if (spatialDim > 2) {
-            z = &soa.GetRealData(2);
-          }
-          for (int i = 0; i < np; ++i) {
-            vtkIdType base = (offset + i) * 3;
-            buffer[base] = static_cast<float>(x.dataPtr()[i]);
-            buffer[base + 1] = y ? static_cast<float>(y->dataPtr()[i])
-                                          : 0.0f;
-            buffer[base + 2] = z ? static_cast<float>(z->dataPtr()[i])
-                                          : 0.0f;
-          }
-        } else {
-          const auto &aos = pti.GetArrayOfStructs();
-          for (int i = 0; i < np; ++i) {
-            vtkIdType base = (offset + i) * 3;
-            const auto &p = aos[i];
-            buffer[base] = static_cast<float>(p.pos(0));
-            buffer[base + 1] =
-                spatialDim > 1 ? static_cast<float>(p.pos(1)) : 0.0f;
-            buffer[base + 2] =
-                spatialDim > 2 ? static_cast<float>(p.pos(2)) : 0.0f;
-          }
-        }
-        offset += np;
+      const float *reals = block.realDataSingle.data();
+      for (int i = 0; i < block.count; ++i) {
+        const int base = i * block.numReal;
+        vtkIdType out = static_cast<vtkIdType>(i) * 3;
+        buffer[out] = reals[base];
+        buffer[out + 1] = (spatialDim > 1) ? reals[base + 1] : 0.0f;
+        buffer[out + 2] = (spatialDim > 2) ? reals[base + 2] : 0.0f;
       }
     } else {
       double *buffer = static_cast<double *>(coords->GetVoidPointer(0));
-      for (ParticleContainerType::ParConstIterType pti(*container, patch.level);
-           pti.isValid(); ++pti) {
-        if (pti.index() != patch.fabIndex) {
-          continue;
-        }
-        const int np = pti.numParticles();
-        if constexpr (ParticleContainerType::ParticleType::is_soa_particle) {
-          const auto &soa = pti.GetStructOfArrays();
-          const auto &x = soa.GetRealData(0);
-          const ParticleContainerType::SoA::RealVector *y = nullptr;
-          const ParticleContainerType::SoA::RealVector *z = nullptr;
-          if (spatialDim > 1) {
-            y = &soa.GetRealData(1);
-          }
-          if (spatialDim > 2) {
-            z = &soa.GetRealData(2);
-          }
-          for (int i = 0; i < np; ++i) {
-            vtkIdType base = (offset + i) * 3;
-            buffer[base] = static_cast<double>(x.dataPtr()[i]);
-            buffer[base + 1] = y ? static_cast<double>(y->dataPtr()[i])
-                                          : 0.0;
-            buffer[base + 2] = z ? static_cast<double>(z->dataPtr()[i])
-                                          : 0.0;
-          }
-        } else {
-          const auto &aos = pti.GetArrayOfStructs();
-          for (int i = 0; i < np; ++i) {
-            vtkIdType base = (offset + i) * 3;
-            const auto &p = aos[i];
-            buffer[base] = static_cast<double>(p.pos(0));
-            buffer[base + 1] =
-                spatialDim > 1 ? static_cast<double>(p.pos(1)) : 0.0;
-            buffer[base + 2] =
-                spatialDim > 2 ? static_cast<double>(p.pos(2)) : 0.0;
-          }
-        }
-        offset += np;
+      const double *reals = block.realDataDouble.data();
+      for (int i = 0; i < block.count; ++i) {
+        const int base = i * block.numReal;
+        vtkIdType out = static_cast<vtkIdType>(i) * 3;
+        buffer[out] = reals[base];
+        buffer[out + 1] = (spatialDim > 1) ? reals[base + 1] : 0.0;
+        buffer[out + 2] = (spatialDim > 2) ? reals[base + 2] : 0.0;
       }
     }
   }
@@ -1744,9 +1758,9 @@ vtkDataSet *avtamrexFileFormat::GetParticleMesh(
   poly->SetPoints(points);
 
   vtkNew<vtkCellArray> verts;
-  if (total > 0) {
-    verts->AllocateExact(total, 1);
-    for (vtkIdType i = 0; i < total; ++i) {
+  if (block.count > 0) {
+    verts->AllocateExact(block.count, 1);
+    for (vtkIdType i = 0; i < block.count; ++i) {
       verts->InsertNextCell(1);
       verts->InsertCellPoint(i);
     }
@@ -1812,35 +1826,32 @@ vtkDataArray *avtamrexFileFormat::GetParticleVar(
     }
     return array;
   }
-
-  auto container = GetParticleContainer(timeState, varInfo.speciesName);
-  if (!container) {
+  if (speciesIt == speciesMap.end()) {
     EXCEPTION1(InvalidVariableException, varInfo.meshName.c_str());
+  }
+
+  ParticleBlock block;
+  std::string readError;
+  if (!ReadParticleBlock(speciesIt->second, patch.level, patch.fabIndex, block,
+                         readError)) {
+    debug1 << "[amrex-plugin] " << readError << "\n";
+    EXCEPTION1(InvalidFilesException, varInfo.meshName.c_str());
   }
   if (varInfo.isReal) {
     if (varInfo.componentIndex < 0 ||
-        varInfo.componentIndex >= container->NumRealComps()) {
+        varInfo.componentIndex >= block.numReal) {
       EXCEPTION1(InvalidVariableException, varInfo.meshName.c_str());
     }
   } else {
     if (varInfo.componentIndex < 0 ||
-        varInfo.componentIndex >= container->NumIntComps()) {
+        varInfo.componentIndex >= block.numInt) {
       EXCEPTION1(InvalidVariableException, varInfo.meshName.c_str());
     }
   }
 
-  vtkIdType total = 0;
-  for (ParticleContainerType::ParConstIterType pti(*container, patch.level);
-       pti.isValid(); ++pti) {
-    if (pti.index() != patch.fabIndex) {
-      continue;
-    }
-    total += static_cast<vtkIdType>(pti.numParticles());
-  }
-
   vtkSmartPointer<vtkDataArray> array;
   if (varInfo.isReal) {
-    if (std::is_same<amrex::ParticleReal, float>::value) {
+    if (block.isSingle) {
       vtkNew<vtkFloatArray> arr;
       array = arr;
     } else {
@@ -1853,56 +1864,28 @@ vtkDataArray *avtamrexFileFormat::GetParticleVar(
   }
 
   array->SetNumberOfComponents(1);
-  array->SetNumberOfTuples(total);
+  array->SetNumberOfTuples(block.count);
 
-  vtkIdType offset = 0;
-  if (total > 0) {
+  if (block.count > 0) {
     if (varInfo.isReal) {
       if (array->GetDataType() == VTK_FLOAT) {
         float *buffer = static_cast<float *>(array->GetVoidPointer(0));
-        for (ParticleContainerType::ParConstIterType pti(*container, patch.level);
-             pti.isValid(); ++pti) {
-          if (pti.index() != patch.fabIndex) {
-            continue;
-          }
-          const auto &soa = pti.GetStructOfArrays();
-          const auto &comp = soa.GetRealData(varInfo.componentIndex);
-          const int np = pti.numParticles();
-          for (int i = 0; i < np; ++i) {
-            buffer[offset + i] = static_cast<float>(comp.dataPtr()[i]);
-          }
-          offset += np;
+        const float *reals = block.realDataSingle.data();
+        for (int i = 0; i < block.count; ++i) {
+          buffer[i] = reals[i * block.numReal + varInfo.componentIndex];
         }
       } else {
         double *buffer = static_cast<double *>(array->GetVoidPointer(0));
-        for (ParticleContainerType::ParConstIterType pti(*container, patch.level);
-             pti.isValid(); ++pti) {
-          if (pti.index() != patch.fabIndex) {
-            continue;
-          }
-          const auto &soa = pti.GetStructOfArrays();
-          const auto &comp = soa.GetRealData(varInfo.componentIndex);
-          const int np = pti.numParticles();
-          for (int i = 0; i < np; ++i) {
-            buffer[offset + i] = static_cast<double>(comp.dataPtr()[i]);
-          }
-          offset += np;
+        const double *reals = block.realDataDouble.data();
+        for (int i = 0; i < block.count; ++i) {
+          buffer[i] = reals[i * block.numReal + varInfo.componentIndex];
         }
       }
     } else {
       int *buffer = static_cast<int *>(array->GetVoidPointer(0));
-      for (ParticleContainerType::ParConstIterType pti(*container, patch.level);
-           pti.isValid(); ++pti) {
-        if (pti.index() != patch.fabIndex) {
-          continue;
-        }
-        const auto &soa = pti.GetStructOfArrays();
-        const auto &comp = soa.GetIntData(varInfo.componentIndex);
-        const int np = pti.numParticles();
-        for (int i = 0; i < np; ++i) {
-          buffer[offset + i] = comp.dataPtr()[i];
-        }
-        offset += np;
+      const int *ints = block.intData.data();
+      for (int i = 0; i < block.count; ++i) {
+        buffer[i] = ints[i * block.numInt + varInfo.componentIndex];
       }
     }
   }
@@ -1978,37 +1961,34 @@ vtkDataArray *avtamrexFileFormat::GetParticleVectorVar(
     }
     return array;
   }
-
-  auto container = GetParticleContainer(timeState, varInfo.speciesName);
-  if (!container) {
+  if (speciesIt == speciesMap.end()) {
     EXCEPTION1(InvalidVariableException, varInfo.meshName.c_str());
+  }
+
+  ParticleBlock block;
+  std::string readError;
+  if (!ReadParticleBlock(speciesIt->second, patch.level, patch.fabIndex, block,
+                         readError)) {
+    debug1 << "[amrex-plugin] " << readError << "\n";
+    EXCEPTION1(InvalidFilesException, varInfo.meshName.c_str());
   }
   if (varInfo.isReal) {
     for (int comp : varInfo.componentIndices) {
-      if (comp < 0 || comp >= container->NumRealComps()) {
+      if (comp < 0 || comp >= block.numReal) {
         EXCEPTION1(InvalidVariableException, varInfo.meshName.c_str());
       }
     }
   } else {
     for (int comp : varInfo.componentIndices) {
-      if (comp < 0 || comp >= container->NumIntComps()) {
+      if (comp < 0 || comp >= block.numInt) {
         EXCEPTION1(InvalidVariableException, varInfo.meshName.c_str());
       }
     }
   }
 
-  vtkIdType total = 0;
-  for (ParticleContainerType::ParConstIterType pti(*container, patch.level);
-       pti.isValid(); ++pti) {
-    if (pti.index() != patch.fabIndex) {
-      continue;
-    }
-    total += static_cast<vtkIdType>(pti.numParticles());
-  }
-
   vtkSmartPointer<vtkDataArray> array;
   if (varInfo.isReal) {
-    if (std::is_same<amrex::ParticleReal, float>::value) {
+    if (block.isSingle) {
       vtkNew<vtkFloatArray> arr;
       array = arr;
     } else {
@@ -2020,69 +2000,44 @@ vtkDataArray *avtamrexFileFormat::GetParticleVectorVar(
     array = arr;
   }
 
-  int numComponents = static_cast<int>(varInfo.componentIndices.size());
+  const int numComponents = static_cast<int>(varInfo.componentIndices.size());
   array->SetNumberOfComponents(numComponents);
-  array->SetNumberOfTuples(total);
+  array->SetNumberOfTuples(block.count);
 
-  vtkIdType offset = 0;
-  if (total > 0) {
+  if (block.count > 0) {
     if (varInfo.isReal) {
       if (array->GetDataType() == VTK_FLOAT) {
         float *buffer = static_cast<float *>(array->GetVoidPointer(0));
-        for (ParticleContainerType::ParConstIterType pti(*container, patch.level);
-             pti.isValid(); ++pti) {
-          if (pti.index() != patch.fabIndex) {
-            continue;
+        const float *reals = block.realDataSingle.data();
+        for (int i = 0; i < block.count; ++i) {
+          vtkIdType base = static_cast<vtkIdType>(i) * numComponents;
+          const int src = i * block.numReal;
+          for (int c = 0; c < numComponents; ++c) {
+            buffer[base + c] =
+                reals[src + varInfo.componentIndices[c]];
           }
-          const auto &soa = pti.GetStructOfArrays();
-          const int np = pti.numParticles();
-          for (int i = 0; i < np; ++i) {
-            vtkIdType base = (offset + i) * numComponents;
-            for (int c = 0; c < numComponents; ++c) {
-              const auto &comp =
-                  soa.GetRealData(varInfo.componentIndices[c]);
-              buffer[base + c] = static_cast<float>(comp.dataPtr()[i]);
-            }
-          }
-          offset += np;
         }
       } else {
         double *buffer = static_cast<double *>(array->GetVoidPointer(0));
-        for (ParticleContainerType::ParConstIterType pti(*container, patch.level);
-             pti.isValid(); ++pti) {
-          if (pti.index() != patch.fabIndex) {
-            continue;
+        const double *reals = block.realDataDouble.data();
+        for (int i = 0; i < block.count; ++i) {
+          vtkIdType base = static_cast<vtkIdType>(i) * numComponents;
+          const int src = i * block.numReal;
+          for (int c = 0; c < numComponents; ++c) {
+            buffer[base + c] =
+                reals[src + varInfo.componentIndices[c]];
           }
-          const auto &soa = pti.GetStructOfArrays();
-          const int np = pti.numParticles();
-          for (int i = 0; i < np; ++i) {
-            vtkIdType base = (offset + i) * numComponents;
-            for (int c = 0; c < numComponents; ++c) {
-              const auto &comp =
-                  soa.GetRealData(varInfo.componentIndices[c]);
-              buffer[base + c] = static_cast<double>(comp.dataPtr()[i]);
-            }
-          }
-          offset += np;
         }
       }
     } else {
       int *buffer = static_cast<int *>(array->GetVoidPointer(0));
-      for (ParticleContainerType::ParConstIterType pti(*container, patch.level);
-           pti.isValid(); ++pti) {
-        if (pti.index() != patch.fabIndex) {
-          continue;
+      const int *ints = block.intData.data();
+      for (int i = 0; i < block.count; ++i) {
+        vtkIdType base = static_cast<vtkIdType>(i) * numComponents;
+        const int src = i * block.numInt;
+        for (int c = 0; c < numComponents; ++c) {
+          buffer[base + c] = ints[src + varInfo.componentIndices[c]];
         }
-        const auto &soa = pti.GetStructOfArrays();
-        const int np = pti.numParticles();
-        for (int i = 0; i < np; ++i) {
-          vtkIdType base = (offset + i) * numComponents;
-          for (int c = 0; c < numComponents; ++c) {
-            const auto &comp = soa.GetIntData(varInfo.componentIndices[c]);
-            buffer[base + c] = comp.dataPtr()[i];
-          }
-        }
-        offset += np;
       }
     }
   }
@@ -2176,7 +2131,6 @@ void avtamrexFileFormat::FreeUpResources(void) {
     entry.reset();
   }
 
-  particleContainerCache_.clear();
   particleVarMap_.clear();
   particleVectorVarMap_.clear();
 
@@ -2341,7 +2295,7 @@ void avtamrexFileFormat::BuildParticleHierarchy(avtDatabaseMetaData *md,
     debug5 << "[amrex-plugin] Particle candidate '" << entry
            << "' header=" << headerPath << "\n";
 
-    ParticleHeaderInfo header;
+    avtamrexFileFormat::ParticleHeaderInfo header;
     std::string parseError;
     if (!ParseParticleHeader(headerPath, header, parseError)) {
       if (!parseError.empty()) {
@@ -2368,8 +2322,17 @@ void avtamrexFileFormat::BuildParticleHierarchy(avtDatabaseMetaData *md,
     info.meshName = "particles/" + entry;
     info.speciesName = entry;
     info.baseMeshName = baseMeshName;
+    info.header = header;
+    info.speciesDir = entryPath;
     info.realComponents = header.realNames;
-    info.intComponents = header.intNames;
+    info.intComponents.clear();
+    if (header.isCheckpoint) {
+      info.intComponents.push_back("id");
+      info.intComponents.push_back("cpu");
+    }
+    info.intComponents.insert(info.intComponents.end(),
+                              header.intNames.begin(),
+                              header.intNames.end());
     info.spatialDim = header.spatialDim;
     info.legacyHeader = header.legacy;
 
@@ -2417,7 +2380,6 @@ void avtamrexFileFormat::BuildParticleHierarchy(avtDatabaseMetaData *md,
       }
     }
 
-    int realOffset = 0;
     for (size_t idx = 0; idx < info.realComponents.size(); ++idx) {
       std::string name = info.realComponents[idx];
       if (name.empty()) {
@@ -2427,7 +2389,8 @@ void avtamrexFileFormat::BuildParticleHierarchy(avtDatabaseMetaData *md,
       ParticleVarInfo varInfo;
       varInfo.meshName = info.meshName;
       varInfo.speciesName = entry;
-      varInfo.componentIndex = static_cast<int>(idx) + realOffset;
+      const int legacyOffset = info.legacyHeader ? 0 : info.spatialDim;
+      varInfo.componentIndex = static_cast<int>(idx) + legacyOffset;
       varInfo.isReal = true;
       particleVarMap_[varName] = varInfo;
       if (md != nullptr) {
