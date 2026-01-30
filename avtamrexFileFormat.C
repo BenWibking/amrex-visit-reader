@@ -736,6 +736,8 @@ inline bool ParseParticleHeader(const std::string &headerPath,
     if (tokens.size() < idx + static_cast<size_t>(finestLevel + 1)) {
       return false;
     }
+    std::vector<int> numGrids;
+    numGrids.reserve(static_cast<size_t>(finestLevel + 1));
     long long totalGrids = 0;
     for (int lev = 0; lev <= finestLevel; ++lev) {
       int ngrids = 0;
@@ -746,6 +748,7 @@ inline bool ParseParticleHeader(const std::string &headerPath,
       if (ngrids < 0) {
         return false;
       }
+      numGrids.push_back(ngrids);
       totalGrids += ngrids;
     }
 
@@ -772,6 +775,7 @@ inline bool ParseParticleHeader(const std::string &headerPath,
       info.realNames.push_back(name.str());
     }
     info.intNames.clear();
+    info.numGrids = std::move(numGrids);
     return true;
   };
 
@@ -2276,7 +2280,56 @@ void avtamrexFileFormat::BuildParticleHierarchy(avtDatabaseMetaData *md,
   debug2 << "[amrex-plugin] Particle scan count=" << entries.size()
          << " timeState=" << timeState << "\n";
 
-  const MeshPatchHierarchy &hierarchy = hierarchyIt->second;
+  auto buildParticleHierarchy =
+      [&](const std::string &meshName, int spatialDim,
+          const std::vector<int> &numGrids) -> MeshPatchHierarchy {
+        MeshPatchHierarchy hierarchy;
+        hierarchy.numLevels = static_cast<int>(numGrids.size());
+        hierarchy.topologicalDim = 0;
+        hierarchy.spatialDim = spatialDim;
+        hierarchy.levelValues.resize(hierarchy.numLevels);
+        hierarchy.patchesPerLevel.assign(hierarchy.numLevels, {});
+        hierarchy.levelCellSizes.assign(hierarchy.numLevels,
+                                        std::array<double, 3>{0.0, 0.0, 0.0});
+        if (hierarchy.numLevels > 1) {
+          hierarchy.levelRefinementRatios.assign(
+              hierarchy.numLevels - 1, std::array<int, 3>{1, 1, 1});
+        }
+
+        for (int level = 0; level < hierarchy.numLevels; ++level) {
+          hierarchy.levelValues[level] = level;
+          const int grids = numGrids[static_cast<size_t>(level)];
+          hierarchy.patchesPerLevel[level].reserve(
+              static_cast<size_t>(std::max(0, grids)));
+          for (int grid = 0; grid < grids; ++grid) {
+            PatchInfo patch;
+            patch.meshName = meshName;
+            patch.level = level;
+            patch.fabIndex = grid;
+            patch.centering = AVT_NODECENT;
+            patch.spatialDim = spatialDim;
+            patch.offset.assign(3, 0);
+            patch.extent.assign(3, 0);
+            patch.storageOffset.assign(3, 0);
+            patch.storageExtent.assign(3, 0);
+            patch.storageOffsetCanonical.assign(3, 0);
+            patch.storageExtentCanonical.assign(3, 0);
+
+            hierarchy.patches.push_back(patch);
+            int patchIndex = static_cast<int>(hierarchy.patches.size()) - 1;
+            hierarchy.levelIdsPerPatch.push_back(level);
+            hierarchy.groupIds.push_back(level);
+            hierarchy.patchesPerLevel[level].push_back(patchIndex);
+
+            std::ostringstream blockName;
+            blockName << "level" << level << ",grid" << grid;
+            hierarchy.blockNames.push_back(blockName.str());
+          }
+        }
+
+        hierarchy.metadataInitialized = true;
+        return hierarchy;
+      };
 
   for (const auto &entry : entries) {
     std::string entryPath = JoinPath(plotfilePaths_[timeState], entry);
@@ -2336,9 +2389,29 @@ void avtamrexFileFormat::BuildParticleHierarchy(avtDatabaseMetaData *md,
     info.spatialDim = header.spatialDim;
     info.legacyHeader = header.legacy;
 
+    std::vector<int> numGrids = info.header.numGrids;
+    if (numGrids.empty() && info.legacyHeader) {
+      LegacyParticleHeader legacy;
+      std::string legacyError;
+      if (ParseLegacyParticleHeader(headerPath, legacy, legacyError)) {
+        numGrids = legacy.gridsPerLevel;
+      } else {
+        debug1 << "[amrex-plugin] Failed to parse legacy particle header '"
+               << headerPath << "': " << legacyError << "\n";
+      }
+    }
+    if (numGrids.empty()) {
+      debug1 << "[amrex-plugin] Particle header '" << headerPath
+             << "' missing grid metadata; skipping hierarchy build\n";
+      continue;
+    }
+    info.header.numGrids = numGrids;
     speciesCache.emplace(entry, info);
-
     meshMap_[info.meshName] = std::tuple(DatasetType::Particle, entry);
+
+    MeshPatchHierarchy particleHierarchy =
+        buildParticleHierarchy(info.meshName, info.spatialDim, numGrids);
+    hierarchyMap[info.meshName] = particleHierarchy;
 
     if (md != nullptr) {
       avtMeshMetaData *meshMd = new avtMeshMetaData;
@@ -2346,18 +2419,18 @@ void avtamrexFileFormat::BuildParticleHierarchy(avtDatabaseMetaData *md,
       meshMd->meshType = AVT_POINT_MESH;
       meshMd->topologicalDimension = 0;
       meshMd->spatialDimension = info.spatialDim;
-      meshMd->numBlocks = static_cast<int>(hierarchy.patches.size());
+      meshMd->numBlocks = static_cast<int>(particleHierarchy.patches.size());
       meshMd->blockTitle = "patches";
       meshMd->blockPieceName = "patch";
-      meshMd->numGroups = hierarchy.numLevels;
+      meshMd->numGroups = particleHierarchy.numLevels;
       meshMd->groupTitle = "levels";
       meshMd->groupPieceName = "level";
-      meshMd->blockNames = hierarchy.blockNames;
+      meshMd->blockNames = particleHierarchy.blockNames;
       meshMd->containsGhostZones = AVT_NO_GHOSTS;
       md->Add(meshMd);
-      intVector blockIds = hierarchy.groupIds;
-      md->AddGroupInformation(hierarchy.numLevels,
-                              static_cast<int>(hierarchy.patches.size()),
+      intVector blockIds = particleHierarchy.groupIds;
+      md->AddGroupInformation(particleHierarchy.numLevels,
+                              static_cast<int>(particleHierarchy.patches.size()),
                               blockIds);
     }
 
@@ -2679,6 +2752,14 @@ void *avtamrexFileFormat::GetAuxiliaryData(const char *var, int timestep,
     }
     if (it == hierarchyMap.end()) {
       debug1 << "[amrex-plugin] Auxiliary request missing mesh '"
+             << meshName << "'\n";
+      return false;
+    }
+
+    auto meshTypeIt = meshMap_.find(meshName);
+    if (meshTypeIt != meshMap_.end() &&
+        std::get<0>(meshTypeIt->second) == DatasetType::Particle) {
+      debug2 << "[amrex-plugin] Auxiliary request skipping particle mesh '"
              << meshName << "'\n";
       return false;
     }
@@ -3633,11 +3714,10 @@ vtkDataSet *avtamrexFileFormat::GetMesh(int timeState, int domain,
     EXCEPTION1(InvalidVariableException, visit_meshname);
   }
 
-  const std::string &baseMeshName = speciesIt->second.baseMeshName;
-  auto hierarchyMapIt = hierarchyMap.find(baseMeshName);
+  auto hierarchyMapIt = hierarchyMap.find(visit_meshname);
   if (hierarchyMapIt == hierarchyMap.end()) {
-    debug1 << "[amrex-plugin] GetMesh missing base mesh '" << baseMeshName
-           << "' for particle mesh '" << meshName << "'\n";
+    debug1 << "[amrex-plugin] GetMesh missing hierarchy for particle mesh '"
+           << meshName << "'\n";
     EXCEPTION1(InvalidVariableException, visit_meshname);
   }
 
@@ -3694,10 +3774,10 @@ vtkDataArray *avtamrexFileFormat::GetVar(int timeState, int domain,
       EXCEPTION1(InvalidVariableException, varname);
     }
     auto &hierarchyMap = meshHierarchyCache_.at(timeState);
-    auto hierarchyIt = hierarchyMap.find(speciesIt->second.baseMeshName);
+    auto hierarchyIt = hierarchyMap.find(varInfo.meshName);
     if (hierarchyIt == hierarchyMap.end()) {
       debug1 << "[amrex-plugin] GetVar missing hierarchy for particle mesh '"
-             << speciesIt->second.baseMeshName << "'\n";
+             << varInfo.meshName << "'\n";
       EXCEPTION1(InvalidVariableException, varname);
     }
     return GetParticleVar(timeState, domain, varInfo, hierarchyIt->second);
@@ -3786,10 +3866,10 @@ vtkDataArray *avtamrexFileFormat::GetVectorVar(int timeState, int domain,
       EXCEPTION1(InvalidVariableException, varname);
     }
     auto &hierarchyMap = meshHierarchyCache_.at(timeState);
-    auto hierarchyIt = hierarchyMap.find(speciesIt->second.baseMeshName);
+    auto hierarchyIt = hierarchyMap.find(varInfo.meshName);
     if (hierarchyIt == hierarchyMap.end()) {
       debug1 << "[amrex-plugin] GetVectorVar missing hierarchy for particle mesh '"
-             << speciesIt->second.baseMeshName << "'\n";
+             << varInfo.meshName << "'\n";
       EXCEPTION1(InvalidVariableException, varname);
     }
     return GetParticleVectorVar(timeState, domain, varInfo,
