@@ -555,7 +555,13 @@ inline bool ParseParticleHeader(const std::string &headerPath,
 
   const std::string &version = tokens[0];
   info.version = version;
-  const bool hasVersionPrefix = (version.rfind("Version_", 0) == 0);
+  const bool isLegacyVersion =
+      (version.find("Version_One_Dot_Zero") != std::string::npos) ||
+      (version.find("Version_One_Dot_One") != std::string::npos);
+  const bool isModernVersion =
+      (version.find("Version_Two_Dot_Zero") != std::string::npos) ||
+      (version.find("Version_Two_Dot_One") != std::string::npos);
+  const bool isUnknownVersion = !isLegacyVersion && !isModernVersion;
   info.isSingle = (version.find("single") != std::string::npos);
 
   auto parseInt = [&](size_t idx, int &value) -> bool {
@@ -707,7 +713,7 @@ inline bool ParseParticleHeader(const std::string &headerPath,
     return true;
   };
 
-  if (hasVersionPrefix && tryModernFormat()) {
+  if (isModernVersion && tryModernFormat()) {
     info.legacy = false;
     return true;
   }
@@ -780,7 +786,7 @@ inline bool ParseParticleHeader(const std::string &headerPath,
     return true;
   };
 
-  if (tryLegacyFormat()) {
+  if ((isLegacyVersion || isUnknownVersion) && tryLegacyFormat()) {
     return true;
   }
 
