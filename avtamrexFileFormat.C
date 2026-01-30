@@ -2268,6 +2268,8 @@ void avtamrexFileFormat::FreeUpResources(void) {
 
   particleVarMap_.clear();
   particleVectorVarMap_.clear();
+  std::fill(particleHierarchyInitialized_.begin(),
+            particleHierarchyInitialized_.end(), false);
 
   if (!vismfClearList_.empty()) {
     std::sort(vismfClearList_.begin(), vismfClearList_.end());
