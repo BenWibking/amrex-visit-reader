@@ -2851,6 +2851,21 @@ void avtamrexFileFormat::EnsureParticleHierarchyInitialized(int timeState) {
   particleHierarchyInitialized_[timeState] = true;
 }
 
+void avtamrexFileFormat::EnsureParticleVarMapsInitialized(int timeState) {
+  if (timeState < 0 ||
+      timeState >= static_cast<int>(particleHierarchyInitialized_.size())) {
+    debug1 << "[amrex-plugin] EnsureParticleVarMapsInitialized out-of-range"
+           << " timeState=" << timeState
+           << " cacheSize=" << particleHierarchyInitialized_.size() << "\n";
+    EXCEPTION1(InvalidVariableException, "timestep out of range");
+  }
+
+  if (!particleHierarchyInitialized_[timeState] &&
+      particleVarMap_.empty() && particleVectorVarMap_.empty()) {
+    EnsureParticleHierarchyInitialized(timeState);
+  }
+}
+
 void *avtamrexFileFormat::GetAuxiliaryData(const char *var, int timestep,
                                              int domain, const char *type,
                                              void *args, DestructorFunction &df) {
@@ -3920,6 +3935,7 @@ vtkDataArray *avtamrexFileFormat::GetVar(int timeState, int domain,
   }
 
   EnsureHierarchyInitialized(timeState);
+  EnsureParticleVarMapsInitialized(timeState);
 
   auto particleVarIt = particleVarMap_.find(requestedVar);
   if (particleVarIt != particleVarMap_.end()) {
@@ -4013,6 +4029,7 @@ vtkDataArray *avtamrexFileFormat::GetVectorVar(int timeState, int domain,
   }
 
   EnsureHierarchyInitialized(timeState);
+  EnsureParticleVarMapsInitialized(timeState);
 
   auto particleVarIt = particleVectorVarMap_.find(requestedVar);
   if (particleVarIt != particleVectorVarMap_.end()) {

@@ -224,6 +224,7 @@ protected:
 
   void EnsureHierarchyInitialized(int timeState);
   void EnsureParticleHierarchyInitialized(int timeState);
+  void EnsureParticleVarMapsInitialized(int timeState);
   void PopulateHierarchyCache(int timeState);
   void BuildFieldHierarchy(avtDatabaseMetaData *md,
                            amrex::PlotFileData &plotfile, int timeState);
