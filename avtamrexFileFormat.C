@@ -528,6 +528,102 @@ inline std::string JoinStrings(const std::vector<std::string> &values) {
   return oss.str();
 }
 
+inline bool PathExists(const std::string &path);
+inline std::string JoinPath(const std::string &parent,
+                            const std::string &child);
+inline std::string ParentDirectory(const std::string &path);
+
+inline std::string ParticleDataFileName(const std::string &prefix, int level,
+                                        int fileNum) {
+  std::ostringstream ss;
+  ss << prefix << "/Level_" << level << "/DATA_";
+  ss << std::setfill('0') << std::setw(5) << fileNum;
+  return ss.str();
+}
+
+inline bool DetectLegacyCheckpoint(
+    const std::string &speciesDir, int spatialDim, int numReal, bool isSingle,
+    const std::vector<std::vector<int>> &fileNums,
+    const std::vector<std::vector<int>> &counts,
+    const std::vector<std::vector<long long>> &offsets) {
+  for (size_t lev = 0; lev < fileNums.size(); ++lev) {
+    for (size_t grid = 0; grid < fileNums[lev].size(); ++grid) {
+      if (counts[lev][grid] <= 0) {
+        continue;
+      }
+
+      int fileNum = fileNums[lev][grid];
+      int count = counts[lev][grid];
+      long long offset = offsets[lev][grid];
+
+      std::string filePath =
+          ParticleDataFileName(speciesDir, static_cast<int>(lev), fileNum);
+      if (!PathExists(filePath)) {
+        std::ostringstream ss;
+        ss << speciesDir << "/Level_" << lev << "/DATA_" << std::setfill('0')
+           << std::setw(4) << fileNum;
+        std::string altPath = ss.str();
+        if (PathExists(altPath)) {
+          filePath = altPath;
+        }
+      }
+      if (!PathExists(filePath)) {
+        continue;
+      }
+
+      std::ifstream in(filePath, std::ios::in | std::ios::binary);
+      if (!in.is_open()) {
+        continue;
+      }
+      in.seekg(0, std::ios::end);
+      long long fileSize = static_cast<long long>(in.tellg());
+      if (fileSize < offset) {
+        continue;
+      }
+
+      long long nextOffset = -1;
+      for (size_t l = 0; l < fileNums.size(); ++l) {
+        for (size_t g = 0; g < fileNums[l].size(); ++g) {
+          if (fileNums[l][g] == fileNum && offsets[l][g] > offset) {
+            if (nextOffset == -1 || offsets[l][g] < nextOffset) {
+              nextOffset = offsets[l][g];
+            }
+          }
+        }
+      }
+
+      long long available = (nextOffset == -1) ? (fileSize - offset)
+                                               : (nextOffset - offset);
+
+      int realBytes = isSingle ? 4 : 8;
+      int intBytes = 4; // Legacy always 4
+      long long numRealTotal =
+          static_cast<long long>(spatialDim) + static_cast<long long>(numReal);
+      // id, cpu, cell_x, cell_y, [cell_z]
+      long long numIntTotal = 2LL + static_cast<long long>(spatialDim);
+
+      long long sizeNoInt =
+          static_cast<long long>(count) * numRealTotal * realBytes;
+      long long sizeWithInt =
+          sizeNoInt + static_cast<long long>(count) * numIntTotal * intBytes;
+
+      if (available == sizeWithInt) {
+        return true;
+      }
+      if (available == sizeNoInt) {
+        return false;
+      }
+      if (available >= sizeWithInt) {
+        return true;
+      }
+      if (available >= sizeNoInt) {
+        return false;
+      }
+    }
+  }
+  return false;
+}
+
 inline bool ParseParticleHeader(const std::string &headerPath,
                                 avtamrexFileFormat::ParticleHeaderInfo &info,
                                 std::string &error) {
@@ -764,14 +860,49 @@ inline bool ParseParticleHeader(const std::string &headerPath,
       return false;
     }
 
+    std::vector<std::vector<int>> fileNums(static_cast<size_t>(finestLevel + 1));
+    std::vector<std::vector<int>> particleCounts(
+        static_cast<size_t>(finestLevel + 1));
+    std::vector<std::vector<long long>> offsets(
+        static_cast<size_t>(finestLevel + 1));
+
+    size_t currentIdx = idx;
+    for (int lev = 0; lev <= finestLevel; ++lev) {
+      int ngrids = numGrids[static_cast<size_t>(lev)];
+      fileNums[static_cast<size_t>(lev)].reserve(static_cast<size_t>(ngrids));
+      particleCounts[static_cast<size_t>(lev)].reserve(
+          static_cast<size_t>(ngrids));
+      offsets[static_cast<size_t>(lev)].reserve(static_cast<size_t>(ngrids));
+      for (int g = 0; g < ngrids; ++g) {
+        int which = 0, count = 0;
+        long long where = 0;
+        try {
+          which = std::stoi(tokens[currentIdx++]);
+          count = std::stoi(tokens[currentIdx++]);
+          where = std::stoll(tokens[currentIdx++]);
+        } catch (...) {
+          return false;
+        }
+        fileNums[static_cast<size_t>(lev)].push_back(which);
+        particleCounts[static_cast<size_t>(lev)].push_back(count);
+        offsets[static_cast<size_t>(lev)].push_back(where);
+      }
+    }
+
+    std::string speciesDir = ParentDirectory(headerPath);
+    bool isSinglePrecision = (tokens[0].find("single") != std::string::npos);
+    bool isCheckpoint = DetectLegacyCheckpoint(speciesDir, dm, nr,
+                                               isSinglePrecision, fileNums,
+                                               particleCounts, offsets);
+
     info.spatialDim = dm;
     info.numRealExtra = nr;
     info.numIntExtra = 0;
     info.numReal = dm + nr;
-    info.numInt = 0;
+    info.numInt = isCheckpoint ? (2 + dm) : 0;
     info.finestLevel = finestLevel;
     info.legacy = true;
-    info.isCheckpoint = false;
+    info.isCheckpoint = isCheckpoint;
     info.numParticles = numParticles;
     info.nextId = maxNextId;
     info.realNames.clear();
@@ -782,6 +913,15 @@ inline bool ParseParticleHeader(const std::string &headerPath,
       info.realNames.push_back(name.str());
     }
     info.intNames.clear();
+    if (isCheckpoint) {
+      info.intNames.push_back("id");
+      info.intNames.push_back("cpu");
+      info.intNames.push_back("cell_x");
+      info.intNames.push_back("cell_y");
+      if (dm == 3) {
+        info.intNames.push_back("cell_z");
+      }
+    }
     info.numGrids = std::move(numGrids);
     return true;
   };
@@ -801,6 +941,7 @@ struct LegacyParticleHeader {
   long long numParticles{0};
   long long maxNextId{0};
   int finestLevel{0};
+  bool isCheckpoint{false};
   std::vector<int> gridsPerLevel;
   struct GridEntry {
     int which{0};
@@ -813,9 +954,11 @@ struct LegacyParticleHeader {
 struct LegacyParticleBlock {
   int count{0};
   int extraComps{0};
+  int numInt{0};
   int spatialDim{0};
   std::vector<double> positions;
   std::vector<double> extras;
+  std::vector<int> intData;
 };
 
 struct ParticleBlock {
@@ -915,6 +1058,34 @@ inline bool ParseLegacyParticleHeader(const std::string &headerPath,
     header.gridEntries.push_back(entry);
   }
 
+  std::vector<std::vector<int>> fileNums(
+      static_cast<size_t>(header.finestLevel + 1));
+  std::vector<std::vector<int>> particleCounts(
+      static_cast<size_t>(header.finestLevel + 1));
+  std::vector<std::vector<long long>> offsets(
+      static_cast<size_t>(header.finestLevel + 1));
+
+  size_t idx = 0;
+  for (int lev = 0; lev <= header.finestLevel; ++lev) {
+    int ngrids = header.gridsPerLevel[static_cast<size_t>(lev)];
+    fileNums[static_cast<size_t>(lev)].reserve(static_cast<size_t>(ngrids));
+    particleCounts[static_cast<size_t>(lev)].reserve(
+        static_cast<size_t>(ngrids));
+    offsets[static_cast<size_t>(lev)].reserve(static_cast<size_t>(ngrids));
+    for (int g = 0; g < ngrids; ++g) {
+      const auto &entry = header.gridEntries[idx++];
+      fileNums[static_cast<size_t>(lev)].push_back(entry.which);
+      particleCounts[static_cast<size_t>(lev)].push_back(entry.count);
+      offsets[static_cast<size_t>(lev)].push_back(entry.where);
+    }
+  }
+
+  std::string speciesDir = ParentDirectory(headerPath);
+  bool isSingle = (header.version.find("single") != std::string::npos);
+  header.isCheckpoint = DetectLegacyCheckpoint(speciesDir, header.spatialDim,
+                                               header.numReal, isSingle,
+                                               fileNums, particleCounts, offsets);
+
   return true;
 }
 
@@ -944,6 +1115,7 @@ inline bool ReadLegacyParticleBlock(const std::string &speciesDir,
   const auto &entry =
       header.gridEntries.at(static_cast<size_t>(offset + gridIndex));
   block.count = entry.count;
+  block.numInt = header.isCheckpoint ? (2 + header.spatialDim) : 0;
   if (block.count <= 0) {
     return true;
   }
@@ -972,6 +1144,23 @@ inline bool ReadLegacyParticleBlock(const std::string &speciesDir,
     return false;
   }
   in.seekg(entry.where, std::ios::beg);
+
+  if (block.numInt > 0) {
+    block.intData.resize(static_cast<size_t>(block.numInt) *
+                         static_cast<size_t>(block.count));
+    size_t totalInts = block.intData.size();
+    std::vector<int32_t> buffer(totalInts);
+    in.read(reinterpret_cast<char *>(buffer.data()),
+            static_cast<std::streamsize>(totalInts * sizeof(int32_t)));
+    if (!in) {
+      error =
+          "Failed to read legacy particle integer data from '" + filePath + "'.";
+      return false;
+    }
+    for (size_t i = 0; i < totalInts; ++i) {
+      block.intData[i] = static_cast<int>(buffer[i]);
+    }
+  }
 
   const int totalReals = header.spatialDim + header.numReal;
   if (totalReals <= 0) {
@@ -1028,14 +1217,6 @@ inline bool ReadLegacyParticleBlock(const std::string &speciesDir,
   }
 
   return true;
-}
-
-inline std::string ParticleDataFileName(const std::string &prefix, int level,
-                                        int fileNum) {
-  std::ostringstream ss;
-  ss << prefix << "/Level_" << level << "/DATA_";
-  ss << std::setfill('0') << std::setw(5) << fileNum;
-  return ss.str();
 }
 
 inline bool ReadParticleBlock(const avtamrexFileFormat::ParticleSpeciesInfo &species,
@@ -1888,9 +2069,6 @@ vtkDataArray *avtamrexFileFormat::GetParticleVar(
   auto &speciesMap = particleSpeciesCache_.at(timeState);
   auto speciesIt = speciesMap.find(varInfo.speciesName);
   if (speciesIt != speciesMap.end() && speciesIt->second.legacyHeader) {
-    if (!varInfo.isReal) {
-      EXCEPTION1(InvalidVariableException, varInfo.meshName.c_str());
-    }
     LegacyParticleHeader legacy;
     std::string parseError;
     std::string headerPath =
@@ -1911,19 +2089,36 @@ vtkDataArray *avtamrexFileFormat::GetParticleVar(
       debug1 << "[amrex-plugin] " << readError << "\n";
       EXCEPTION1(InvalidFilesException, varInfo.meshName.c_str());
     }
-    if (varInfo.componentIndex < 0 ||
-        varInfo.componentIndex >= block.extraComps) {
-      EXCEPTION1(InvalidVariableException, varInfo.meshName.c_str());
-    }
 
-    vtkDoubleArray *array = vtkDoubleArray::New();
-    array->SetNumberOfComponents(1);
-    array->SetNumberOfTuples(block.count);
-    double *buffer = array->GetPointer(0);
-    for (int i = 0; i < block.count; ++i) {
-      buffer[i] = block.extras[i * block.extraComps + varInfo.componentIndex];
+    if (varInfo.isReal) {
+      if (varInfo.componentIndex < 0 ||
+          varInfo.componentIndex >= block.extraComps) {
+        EXCEPTION1(InvalidVariableException, varInfo.meshName.c_str());
+      }
+
+      vtkDoubleArray *array = vtkDoubleArray::New();
+      array->SetNumberOfComponents(1);
+      array->SetNumberOfTuples(block.count);
+      double *buffer = array->GetPointer(0);
+      for (int i = 0; i < block.count; ++i) {
+        buffer[i] = block.extras[i * block.extraComps + varInfo.componentIndex];
+      }
+      return array;
+    } else {
+      if (varInfo.componentIndex < 0 ||
+          varInfo.componentIndex >= block.numInt) {
+        EXCEPTION1(InvalidVariableException, varInfo.meshName.c_str());
+      }
+
+      vtkIntArray *array = vtkIntArray::New();
+      array->SetNumberOfComponents(1);
+      array->SetNumberOfTuples(block.count);
+      int *buffer = array->GetPointer(0);
+      for (int i = 0; i < block.count; ++i) {
+        buffer[i] = block.intData[i * block.numInt + varInfo.componentIndex];
+      }
+      return array;
     }
-    return array;
   }
   if (speciesIt == speciesMap.end()) {
     EXCEPTION1(InvalidVariableException, varInfo.meshName.c_str());

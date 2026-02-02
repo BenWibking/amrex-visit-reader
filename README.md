@@ -6,9 +6,9 @@ Supported:
 * Cartesian AMR hierarchies stored in AMReX plotfiles
 * Cell-centered scalar variables
 * Cell-centered vector variables (detected from `_x/_y/_z` naming conventions)
+* Particle species (including Legacy BoxLib checkpoints and Modern AMReX formats)
 
 Not yet supported:
-* Particle species
 
 Unplanned:
 * non-Cartesian geometry
