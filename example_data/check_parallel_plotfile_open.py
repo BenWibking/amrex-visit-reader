@@ -95,6 +95,9 @@ def main():
         try:
             GetLastError(1)
             AddPlot("Pseudocolor", name)
+            p = PseudocolorAttributes()
+            p.scaling = p.Linear
+            SetPlotOptions(p)
             DrawPlots()
             Query("MinMax")
             last_error = GetLastError()

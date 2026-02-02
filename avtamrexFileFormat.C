@@ -2268,6 +2268,12 @@ void avtamrexFileFormat::FreeUpResources(void) {
 
   particleVarMap_.clear();
   particleVectorVarMap_.clear();
+  for (auto &entry : particleSpeciesCache_) {
+    entry.clear();
+  }
+  for (auto &entry : meshHierarchyCache_) {
+    entry.clear();
+  }
   std::fill(particleHierarchyInitialized_.begin(),
             particleHierarchyInitialized_.end(), false);
 
@@ -3681,6 +3687,12 @@ vtkDataArray *avtamrexFileFormat::LoadScalarPatchData(
         std::copy(row, row + nx, buffer + idx);
         idx += nx;
       }
+    }
+  }
+
+  for (vtkIdType i = 0; i < tupleCount; ++i) {
+    if (!std::isfinite(buffer[i])) {
+      buffer[i] = 0.0;
     }
   }
 

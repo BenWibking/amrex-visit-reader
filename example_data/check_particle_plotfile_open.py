@@ -123,6 +123,10 @@ def render_plot(plot_type, var_name):
 def query_minmax(plot_type, var_name):
     GetLastError(1)
     AddPlot(plot_type, var_name)
+    if plot_type == "Pseudocolor":
+        p = PseudocolorAttributes()
+        p.scaling = p.Linear
+        SetPlotOptions(p)
     DrawPlots()
     Query("MinMax")
     last_error = GetLastError()
