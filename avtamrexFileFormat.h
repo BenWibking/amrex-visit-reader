@@ -103,7 +103,6 @@ public:
     int numReal{0};
     int numInt{0};
     int finestLevel{0};
-    bool isCheckpoint{false};
     bool isSingle{false};
     long long numParticles{0};
     long long nextId{0};

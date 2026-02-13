@@ -632,13 +632,16 @@ inline bool ParseParticleHeader(const std::string &headerPath,
     for (int i = 0; i < ni; ++i) {
       intNames.push_back(tokens[idx++]);
     }
-    int checkpointFlag = 0;
+    int legacyCheckpointFlag = 0;
     long long numParticles = 0;
     long long maxNextId = 0;
     int finestLevel = 0;
-    if (!parseInt(idx, checkpointFlag)) {
+    // Modern AMReX particle records always include id/cpu integer slots.
+    // Keep parsing this legacy header field to preserve token alignment.
+    if (!parseInt(idx, legacyCheckpointFlag)) {
       return false;
     }
+    (void)legacyCheckpointFlag;
     ++idx;
     if (!parseLong(idx, numParticles)) {
       return false;
@@ -712,8 +715,7 @@ inline bool ParseParticleHeader(const std::string &headerPath,
     info.numRealExtra = numRealExtra;
     info.numIntExtra = numIntExtra;
     info.numReal = dm + numRealExtra;
-    info.numInt = 2 * (checkpointFlag != 0) + numIntExtra;
-    info.isCheckpoint = (checkpointFlag != 0);
+    info.numInt = 2 + numIntExtra;
     info.finestLevel = finestLevel;
     info.numParticles = numParticles;
     info.nextId = maxNextId;
@@ -2131,10 +2133,8 @@ void avtamrexFileFormat::BuildParticleHierarchy(avtDatabaseMetaData *md,
     info.speciesDir = entryPath;
     info.realComponents = header.realNames;
     info.intComponents.clear();
-    if (header.isCheckpoint) {
-      info.intComponents.push_back("id");
-      info.intComponents.push_back("cpu");
-    }
+    info.intComponents.push_back("id");
+    info.intComponents.push_back("cpu");
     info.intComponents.insert(info.intComponents.end(),
                               header.intNames.begin(),
                               header.intNames.end());
