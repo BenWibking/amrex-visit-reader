@@ -173,7 +173,7 @@ def main():
 
     if not ensure_parallel_engine():
         print("FAIL: Unable to start a parallel compute engine.")
-        return
+        return 1
 
     engines = GetEngineList()
     props = GetEngineProperties(engines[0])
@@ -185,7 +185,7 @@ def main():
     point_meshes = find_point_meshes(metadata)
     if not point_meshes:
         print("FAIL: No point meshes found in the dataset metadata.")
-        return
+        return 1
 
     failures = []
     defined_expressions = set()
@@ -246,11 +246,14 @@ def main():
         for name, msg in failures:
             print(f"  {name}: {msg}")
         print("FAIL: One or more particle plots failed to render.")
+        exit_code = 1
     else:
         print("PASS: Particle meshes rendered successfully.")
+        exit_code = 0
 
     DeleteAllPlots()
+    return exit_code
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
