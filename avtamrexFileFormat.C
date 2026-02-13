@@ -806,6 +806,49 @@ inline size_t ParticleIntIndex(const ParticleBlock &block, int i, int comp) {
          static_cast<size_t>(comp);
 }
 
+inline bool IsVersionTwoDotOne(const std::string &version) {
+  return version.find("Version_Two_Dot_One") != std::string::npos;
+}
+
+inline long long UnpackParticleIdFromIdCpu(std::uint64_t idcpu) {
+  constexpr std::uint64_t cpuBits = 24;
+  constexpr std::uint64_t idMask = (static_cast<std::uint64_t>(1) << 39) - 1;
+  const bool positive = (idcpu >> 63) != 0;
+  const long long magnitude = static_cast<long long>((idcpu >> cpuBits) & idMask);
+  return positive ? magnitude : -magnitude;
+}
+
+inline int UnpackParticleCpuFromIdCpu(std::uint64_t idcpu) {
+  constexpr std::uint64_t cpuMask =
+      (static_cast<std::uint64_t>(1) << 24) - 1;
+  return static_cast<int>(idcpu & cpuMask);
+}
+
+inline long long ParticleIntValue(
+    const ParticleBlock &block,
+    const avtamrexFileFormat::ParticleSpeciesInfo &species, int particleIndex,
+    int componentIndex) {
+  if (!IsVersionTwoDotOne(species.header.version) || componentIndex > 1 ||
+      block.numInt < 2) {
+    return block.intData[ParticleIntIndex(block, particleIndex, componentIndex)];
+  }
+
+  const std::int32_t rawHi = static_cast<std::int32_t>(
+      block.intData[ParticleIntIndex(block, particleIndex, 0)]);
+  const std::int32_t rawLo = static_cast<std::int32_t>(
+      block.intData[ParticleIntIndex(block, particleIndex, 1)]);
+  std::uint32_t hi = 0;
+  std::uint32_t lo = 0;
+  std::memcpy(&hi, &rawHi, sizeof(hi));
+  std::memcpy(&lo, &rawLo, sizeof(lo));
+  const std::uint64_t idcpu =
+      (static_cast<std::uint64_t>(hi) << 32) | static_cast<std::uint64_t>(lo);
+  if (componentIndex == 0) {
+    return UnpackParticleIdFromIdCpu(idcpu);
+  }
+  return static_cast<long long>(UnpackParticleCpuFromIdCpu(idcpu));
+}
+
 inline long long NextParticleOffsetForFile(
     const avtamrexFileFormat::ParticleHeaderInfo &header, int level,
     int fileNum, long long offset) {
@@ -1689,17 +1732,16 @@ vtkDataArray *avtamrexFileFormat::GetParticleVar(
     } else {
       if (array->GetDataType() == VTK_LONG_LONG) {
         auto *buffer = static_cast<long long *>(array->GetVoidPointer(0));
-        const long long *ints = block.intData.data();
         for (int i = 0; i < block.count; ++i) {
-          buffer[i] =
-              ints[ParticleIntIndex(block, i, varInfo.componentIndex)];
+          buffer[i] = ParticleIntValue(block, speciesIt->second, i,
+                                       varInfo.componentIndex);
         }
       } else {
         int *buffer = static_cast<int *>(array->GetVoidPointer(0));
-        const long long *ints = block.intData.data();
         for (int i = 0; i < block.count; ++i) {
           buffer[i] = static_cast<int>(
-              ints[ParticleIntIndex(block, i, varInfo.componentIndex)]);
+              ParticleIntValue(block, speciesIt->second, i,
+                               varInfo.componentIndex));
         }
       }
     }
@@ -1809,24 +1851,21 @@ vtkDataArray *avtamrexFileFormat::GetParticleVectorVar(
     } else {
       if (array->GetDataType() == VTK_LONG_LONG) {
         auto *buffer = static_cast<long long *>(array->GetVoidPointer(0));
-        const long long *ints = block.intData.data();
         for (int i = 0; i < block.count; ++i) {
           vtkIdType base = static_cast<vtkIdType>(i) * numComponents;
           for (int c = 0; c < numComponents; ++c) {
-            buffer[base + c] =
-                ints[ParticleIntIndex(block, i,
-                                      varInfo.componentIndices[c])];
+            buffer[base + c] = ParticleIntValue(block, speciesIt->second, i,
+                                                varInfo.componentIndices[c]);
           }
         }
       } else {
         int *buffer = static_cast<int *>(array->GetVoidPointer(0));
-        const long long *ints = block.intData.data();
         for (int i = 0; i < block.count; ++i) {
           vtkIdType base = static_cast<vtkIdType>(i) * numComponents;
           for (int c = 0; c < numComponents; ++c) {
             buffer[base + c] = static_cast<int>(
-                ints[ParticleIntIndex(block, i,
-                                      varInfo.componentIndices[c])]);
+                ParticleIntValue(block, speciesIt->second, i,
+                                 varInfo.componentIndices[c]));
           }
         }
       }
