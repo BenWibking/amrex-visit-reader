@@ -155,7 +155,7 @@ def main():
 
     if not ensure_parallel_engine():
         print("FAIL: Unable to start a parallel compute engine.")
-        return
+        return 1
 
     OpenDatabase(dataset, 0, "amrex-plotfile")
     metadata = GetMetaData(dataset)
@@ -164,7 +164,7 @@ def main():
     point_meshes = find_point_meshes(metadata)
     if not point_meshes:
         print("FAIL: No point meshes found in the dataset metadata.")
-        return
+        return 1
 
     defined_expressions = set()
     for mesh in point_meshes:
@@ -175,7 +175,7 @@ def main():
         if not scalar_vars and not vector_vars:
             print(f"FAIL: No per-particle variables found for {mesh_name}.")
             DeleteAllPlots()
-            return
+            return 1
 
         scalar_var = scalar_vars[0] if scalar_vars else None
         vector_var = vector_vars[0] if vector_vars else None
@@ -189,7 +189,7 @@ def main():
         except Exception as exc:
             print(f"FAIL: Mesh query failed -> {exc}")
             DeleteAllPlots()
-            return
+            return 1
 
         try:
             if float(num_nodes) == 0:
@@ -215,7 +215,7 @@ def main():
         except Exception as exc:
             print(f"FAIL: Initial particle query failed -> {exc}")
             DeleteAllPlots()
-            return
+            return 1
 
         print("Clearing engine caches...")
         ClearCacheForAllEngines()
@@ -247,7 +247,7 @@ def main():
         except Exception as exc:
             print(f"FAIL: Post-clear particle query failed -> {exc}")
             DeleteAllPlots()
-            return
+            return 1
 
     print("PASS: Particle variables still render after ClearCache.")
     DeleteAllPlots()
@@ -259,7 +259,8 @@ def main():
         CloseComputeEngine()
     except Exception:
         pass
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
