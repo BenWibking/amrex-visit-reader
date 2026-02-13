@@ -1701,7 +1701,11 @@ vtkDataArray *avtamrexFileFormat::GetParticleVar(
       array = arr;
     }
   } else {
-    if (block.intBytes == 8) {
+    const bool needs64BitInt =
+        (block.intBytes == 8) ||
+        (IsVersionTwoDotOne(speciesIt->second.header.version) &&
+         varInfo.componentIndex == 0);
+    if (needs64BitInt) {
       vtkNew<vtkLongLongArray> arr;
       array = arr;
     } else {
@@ -1811,7 +1815,17 @@ vtkDataArray *avtamrexFileFormat::GetParticleVectorVar(
       array = arr;
     }
   } else {
-    if (block.intBytes == 8) {
+    bool hasDecodedIdComponent = false;
+    if (IsVersionTwoDotOne(speciesIt->second.header.version)) {
+      for (int comp : varInfo.componentIndices) {
+        if (comp == 0) {
+          hasDecodedIdComponent = true;
+          break;
+        }
+      }
+    }
+    const bool needs64BitInt = (block.intBytes == 8) || hasDecodedIdComponent;
+    if (needs64BitInt) {
       vtkNew<vtkLongLongArray> arr;
       array = arr;
     } else {
