@@ -2467,8 +2467,11 @@ void avtamrexFileFormat::EnsureParticleVarMapsInitialized(int timeState) {
     EXCEPTION1(InvalidVariableException, "timestep out of range");
   }
 
-  if (!particleHierarchyInitialized_[timeState] &&
-      particleVarMap_.empty() && particleVectorVarMap_.empty()) {
+  if (!particleHierarchyInitialized_[timeState]) {
+    // Particle variable layouts may differ between timesteps. Rebuild maps
+    // whenever a timestep's particle hierarchy has not been initialized yet.
+    particleVarMap_.clear();
+    particleVectorVarMap_.clear();
     EnsureParticleHierarchyInitialized(timeState);
   }
 }
