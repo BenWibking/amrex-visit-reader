@@ -532,6 +532,9 @@ inline bool PathExists(const std::string &path);
 inline std::string JoinPath(const std::string &parent,
                             const std::string &child);
 inline std::string ParentDirectory(const std::string &path);
+inline bool ListDirectoryEntries(const std::string &path,
+                                 std::vector<std::string> &entries,
+                                 std::string &error);
 
 inline std::string ParticleDataFileName(const std::string &prefix, int level,
                                         int fileNum) {
@@ -539,6 +542,52 @@ inline std::string ParticleDataFileName(const std::string &prefix, int level,
   ss << prefix << "/Level_" << level << "/DATA_";
   ss << std::setfill('0') << std::setw(5) << fileNum;
   return ss.str();
+}
+
+inline std::string ResolveParticleDataFileName(const std::string &prefix,
+                                               int level, int fileNum) {
+  const std::string levelDir = JoinPath(prefix, "Level_" + std::to_string(level));
+  std::vector<std::string> entries;
+  std::string listError;
+  if (ListDirectoryEntries(levelDir, entries, listError)) {
+    for (const auto &entry : entries) {
+      if (entry.rfind("DATA_", 0) != 0) {
+        continue;
+      }
+      const std::string suffix = entry.substr(5);
+      if (suffix.empty() ||
+          !std::all_of(suffix.begin(), suffix.end(),
+                       [](unsigned char ch) { return std::isdigit(ch) != 0; })) {
+        continue;
+      }
+      long long parsedFileNum = -1;
+      try {
+        parsedFileNum = std::stoll(suffix);
+      } catch (const std::exception &) {
+        continue;
+      }
+      if (parsedFileNum != static_cast<long long>(fileNum)) {
+        continue;
+      }
+      return JoinPath(levelDir, entry);
+    }
+  }
+
+  {
+    std::ostringstream ss;
+    ss << levelDir << "/DATA_" << fileNum;
+    if (PathExists(ss.str())) {
+      return ss.str();
+    }
+  }
+  {
+    std::ostringstream ss;
+    ss << levelDir << "/DATA_" << std::setfill('0') << std::setw(4) << fileNum;
+    if (PathExists(ss.str())) {
+      return ss.str();
+    }
+  }
+  return ParticleDataFileName(prefix, level, fileNum);
 }
 
 inline bool ParseParticleHeader(const std::string &headerPath,
@@ -821,16 +870,8 @@ inline bool ReadParticleBlock(const avtamrexFileFormat::ParticleSpeciesInfo &spe
     return true;
   }
 
-  std::string filePath = ParticleDataFileName(species.speciesDir, level, fileNum);
-  if (!PathExists(filePath)) {
-    std::ostringstream ss;
-    ss << species.speciesDir << "/Level_" << level << "/DATA_"
-       << std::setfill('0') << std::setw(4) << fileNum;
-    std::string altPath = ss.str();
-    if (PathExists(altPath)) {
-      filePath = altPath;
-    }
-  }
+  std::string filePath =
+      ResolveParticleDataFileName(species.speciesDir, level, fileNum);
   if (!PathExists(filePath)) {
     error = "Particle data file missing: '" + filePath + "'.";
     return false;
@@ -1883,6 +1924,7 @@ void avtamrexFileFormat::FreeUpResources(void) {
 
   particleVarMap_.clear();
   particleVectorVarMap_.clear();
+  particleVarMapsTimeState_ = -1;
   for (auto &entry : particleSpeciesCache_) {
     entry.clear();
   }
@@ -2382,6 +2424,7 @@ void avtamrexFileFormat::PopulateDatabaseMetaData(avtDatabaseMetaData *md,
   meshMap_.clear();
   particleVarMap_.clear();
   particleVectorVarMap_.clear();
+  particleVarMapsTimeState_ = -1;
 
   EnsureHierarchyInitialized(timeState);
   // Ensure all ranks build PlotFileDataImpl together to avoid
@@ -2392,6 +2435,7 @@ void avtamrexFileFormat::PopulateDatabaseMetaData(avtDatabaseMetaData *md,
   BuildFieldHierarchy(md, *plotfile, timeState);
   BuildParticleHierarchy(md, *plotfile, timeState);
   particleHierarchyInitialized_[timeState] = true;
+  particleVarMapsTimeState_ = timeState;
 
   debug1 << "[amrex-plugin] PopulateDatabaseMetaData complete for timestep="
          << timeState << " meshes=" << meshMap_.size()
@@ -2456,6 +2500,7 @@ void avtamrexFileFormat::EnsureParticleHierarchyInitialized(int timeState) {
   auto plotfile = GetPlotFile(timeState);
   BuildParticleHierarchy(nullptr, *plotfile, timeState);
   particleHierarchyInitialized_[timeState] = true;
+  particleVarMapsTimeState_ = timeState;
 }
 
 void avtamrexFileFormat::EnsureParticleVarMapsInitialized(int timeState) {
@@ -2468,11 +2513,23 @@ void avtamrexFileFormat::EnsureParticleVarMapsInitialized(int timeState) {
   }
 
   if (!particleHierarchyInitialized_[timeState]) {
-    // Particle variable layouts may differ between timesteps. Rebuild maps
-    // whenever a timestep's particle hierarchy has not been initialized yet.
+    // Build the requested timestep's particle hierarchy and var maps on demand.
     particleVarMap_.clear();
     particleVectorVarMap_.clear();
+    particleVarMapsTimeState_ = -1;
     EnsureParticleHierarchyInitialized(timeState);
+    return;
+  }
+
+  if (particleVarMapsTimeState_ != timeState) {
+    // particleVarMap_/particleVectorVarMap_ are shared across timesteps.
+    // Rebuild when servicing a different timestep than the last map owner.
+    particleVarMap_.clear();
+    particleVectorVarMap_.clear();
+    auto plotfile = GetPlotFile(timeState);
+    BuildParticleHierarchy(nullptr, *plotfile, timeState);
+    particleHierarchyInitialized_[timeState] = true;
+    particleVarMapsTimeState_ = timeState;
   }
 }
 

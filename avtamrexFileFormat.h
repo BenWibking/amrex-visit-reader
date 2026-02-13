@@ -213,6 +213,7 @@ protected:
   std::vector<bool> particleHierarchyInitialized_;
   std::unordered_map<std::string, ParticleVarInfo> particleVarMap_;
   std::unordered_map<std::string, ParticleVectorVarInfo> particleVectorVarMap_;
+  int particleVarMapsTimeState_{-1};
 
   void PopulateDatabaseMetaData(avtDatabaseMetaData *, int) override;
   void *GetAuxiliaryData(const char *var, int timestep, int domain,
