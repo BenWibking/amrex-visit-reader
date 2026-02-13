@@ -283,78 +283,6 @@ std::mutex AmrexRuntime::mutex_;
 int AmrexRuntime::refCount_ = 0;
 bool AmrexRuntime::initialized_ = false;
 
-template <typename T>
-inline void DuplicateHighEndNodes(const PatchInfo &patch, T *values) {
-  if (values == nullptr || patch.centering != AVT_NODECENT) {
-    return;
-  }
-
-  std::array<uint64_t, 3> vtkDims{1, 1, 1};
-  for (int axis = 0; axis < 3; ++axis) {
-    if (axis < static_cast<int>(patch.extent.size())) {
-      uint64_t dim = patch.extent[axis];
-      vtkDims[axis] = dim == 0 ? 1 : dim;
-    }
-  }
-
-  const auto &storageDims = patch.storageExtentCanonical;
-  const auto &storageToVtk = patch.storageToVtk;
-  std::array<uint64_t, 3> validDims{1, 1, 1};
-  bool requiresDuplication = false;
-  for (int axis = 0; axis < 3; ++axis) {
-    int storageIndex = storageToVtk[axis];
-    uint64_t dimValue = vtkDims[axis];
-    if (storageIndex >= 0 &&
-        storageIndex < static_cast<int>(storageDims.size())) {
-      dimValue = storageDims[static_cast<size_t>(storageIndex)];
-    }
-    if (dimValue == 0) {
-      dimValue = 1;
-    }
-    validDims[axis] = dimValue;
-    if (vtkDims[axis] > dimValue) {
-      requiresDuplication = true;
-    }
-  }
-
-  if (!requiresDuplication) {
-    return;
-  }
-
-  uint64_t totalElements = vtkDims[0] * vtkDims[1] * vtkDims[2];
-  for (uint64_t linear = 0; linear < totalElements; ++linear) {
-    uint64_t tmp = linear;
-    std::array<uint64_t, 3> coords{0, 0, 0};
-    for (int axis = 0; axis < 3; ++axis) {
-      const uint64_t dim = vtkDims[axis];
-      if (dim > 0) {
-        coords[axis] = tmp % dim;
-        tmp /= dim;
-      } else {
-        coords[axis] = 0;
-      }
-    }
-
-    bool needsCopy = false;
-    std::array<uint64_t, 3> srcCoords = coords;
-    for (int axis = 0; axis < 3; ++axis) {
-      uint64_t valid = validDims[axis];
-      if (coords[axis] >= valid) {
-        needsCopy = true;
-        srcCoords[axis] = valid > 0 ? valid - 1 : 0;
-      }
-    }
-
-    if (!needsCopy) {
-      continue;
-    }
-
-    uint64_t srcIndex =
-        srcCoords[0] + vtkDims[0] * (srcCoords[1] + vtkDims[1] * srcCoords[2]);
-    values[linear] = values[static_cast<size_t>(srcIndex)];
-  }
-}
-
 inline std::vector<int> MakeRefinementVector(const std::array<int, 3> &ratio,
                                              int dims) {
   std::vector<int> result(std::max(1, dims), 1);
@@ -3405,13 +3333,6 @@ vtkDataArray *avtamrexFileFormat::LoadScalarPatchData(
     }
   }
 
-  for (vtkIdType i = 0; i < tupleCount; ++i) {
-    if (!std::isfinite(buffer[i])) {
-      buffer[i] = 0.0;
-    }
-  }
-
-  DuplicateHighEndNodes(patch, buffer);
   return array;
 }
 
