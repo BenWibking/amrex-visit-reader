@@ -105,7 +105,6 @@ public:
     int finestLevel{0};
     bool isCheckpoint{false};
     bool isSingle{false};
-    bool legacy{false};
     long long numParticles{0};
     long long nextId{0};
     std::string version;
@@ -126,7 +125,6 @@ public:
     ParticleHeaderInfo header;
     std::string speciesDir;
     int spatialDim{0};
-    bool legacyHeader{false};
   };
 
 protected:

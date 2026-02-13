@@ -541,89 +541,6 @@ inline std::string ParticleDataFileName(const std::string &prefix, int level,
   return ss.str();
 }
 
-inline bool DetectLegacyCheckpoint(
-    const std::string &speciesDir, int spatialDim, int numReal, bool isSingle,
-    const std::vector<std::vector<int>> &fileNums,
-    const std::vector<std::vector<int>> &counts,
-    const std::vector<std::vector<long long>> &offsets) {
-  for (size_t lev = 0; lev < fileNums.size(); ++lev) {
-    for (size_t grid = 0; grid < fileNums[lev].size(); ++grid) {
-      if (counts[lev][grid] <= 0) {
-        continue;
-      }
-
-      int fileNum = fileNums[lev][grid];
-      int count = counts[lev][grid];
-      long long offset = offsets[lev][grid];
-
-      std::string filePath =
-          ParticleDataFileName(speciesDir, static_cast<int>(lev), fileNum);
-      if (!PathExists(filePath)) {
-        std::ostringstream ss;
-        ss << speciesDir << "/Level_" << lev << "/DATA_" << std::setfill('0')
-           << std::setw(4) << fileNum;
-        std::string altPath = ss.str();
-        if (PathExists(altPath)) {
-          filePath = altPath;
-        }
-      }
-      if (!PathExists(filePath)) {
-        continue;
-      }
-
-      std::ifstream in(filePath, std::ios::in | std::ios::binary);
-      if (!in.is_open()) {
-        continue;
-      }
-      in.seekg(0, std::ios::end);
-      long long fileSize = static_cast<long long>(in.tellg());
-      if (fileSize < offset) {
-        continue;
-      }
-
-      long long nextOffset = -1;
-      for (size_t l = 0; l < fileNums.size(); ++l) {
-        for (size_t g = 0; g < fileNums[l].size(); ++g) {
-          if (fileNums[l][g] == fileNum && offsets[l][g] > offset) {
-            if (nextOffset == -1 || offsets[l][g] < nextOffset) {
-              nextOffset = offsets[l][g];
-            }
-          }
-        }
-      }
-
-      long long available = (nextOffset == -1) ? (fileSize - offset)
-                                               : (nextOffset - offset);
-
-      int realBytes = isSingle ? 4 : 8;
-      int intBytes = 4; // Legacy always 4
-      long long numRealTotal =
-          static_cast<long long>(spatialDim) + static_cast<long long>(numReal);
-      // id, cpu, cell_x, cell_y, [cell_z]
-      long long numIntTotal = 2LL + static_cast<long long>(spatialDim);
-
-      long long sizeNoInt =
-          static_cast<long long>(count) * numRealTotal * realBytes;
-      long long sizeWithInt =
-          sizeNoInt + static_cast<long long>(count) * numIntTotal * intBytes;
-
-      if (available == sizeWithInt) {
-        return true;
-      }
-      if (available == sizeNoInt) {
-        return false;
-      }
-      if (available >= sizeWithInt) {
-        return true;
-      }
-      if (available >= sizeNoInt) {
-        return false;
-      }
-    }
-  }
-  return false;
-}
-
 inline bool ParseParticleHeader(const std::string &headerPath,
                                 avtamrexFileFormat::ParticleHeaderInfo &info,
                                 std::string &error) {
@@ -651,14 +568,14 @@ inline bool ParseParticleHeader(const std::string &headerPath,
 
   const std::string &version = tokens[0];
   info.version = version;
-  const bool isLegacyVersion =
-      (version.find("Version_One_Dot_Zero") != std::string::npos) ||
-      (version.find("Version_One_Dot_One") != std::string::npos);
   const bool isModernVersion =
       (version.find("Version_Two_Dot_Zero") != std::string::npos) ||
       (version.find("Version_Two_Dot_One") != std::string::npos);
-  const bool isUnknownVersion = !isLegacyVersion && !isModernVersion;
   info.isSingle = (version.find("single") != std::string::npos);
+  if (!isModernVersion) {
+    error = "Legacy particle format is not supported for '" + headerPath + "'.";
+    return false;
+  }
 
   auto parseInt = [&](size_t idx, int &value) -> bool {
     if (idx >= tokens.size()) {
@@ -809,157 +726,12 @@ inline bool ParseParticleHeader(const std::string &headerPath,
     return true;
   };
 
-  if (isModernVersion && tryModernFormat()) {
-    info.legacy = false;
+  if (tryModernFormat()) {
     return true;
   }
-
-  auto tryLegacyFormat = [&]() -> bool {
-    size_t idx = 3;
-    long long numParticles = 0;
-    long long maxNextId = 0;
-    int finestLevel = 0;
-    if (!parseLong(idx, numParticles)) {
-      return false;
-    }
-    ++idx;
-    if (!parseLong(idx, maxNextId)) {
-      return false;
-    }
-    ++idx;
-    if (!parseInt(idx, finestLevel)) {
-      return false;
-    }
-    ++idx;
-
-    if (finestLevel < 0) {
-      return false;
-    }
-
-    if (tokens.size() < idx + static_cast<size_t>(finestLevel + 1)) {
-      return false;
-    }
-    std::vector<int> numGrids;
-    numGrids.reserve(static_cast<size_t>(finestLevel + 1));
-    long long totalGrids = 0;
-    for (int lev = 0; lev <= finestLevel; ++lev) {
-      int ngrids = 0;
-      if (!parseInt(idx, ngrids)) {
-        return false;
-      }
-      ++idx;
-      if (ngrids < 0) {
-        return false;
-      }
-      numGrids.push_back(ngrids);
-      totalGrids += ngrids;
-    }
-
-    const size_t remaining = tokens.size() - idx;
-    if (remaining < static_cast<size_t>(totalGrids) * 3) {
-      return false;
-    }
-
-    std::vector<std::vector<int>> fileNums(static_cast<size_t>(finestLevel + 1));
-    std::vector<std::vector<int>> particleCounts(
-        static_cast<size_t>(finestLevel + 1));
-    std::vector<std::vector<long long>> offsets(
-        static_cast<size_t>(finestLevel + 1));
-
-    size_t currentIdx = idx;
-    for (int lev = 0; lev <= finestLevel; ++lev) {
-      int ngrids = numGrids[static_cast<size_t>(lev)];
-      fileNums[static_cast<size_t>(lev)].reserve(static_cast<size_t>(ngrids));
-      particleCounts[static_cast<size_t>(lev)].reserve(
-          static_cast<size_t>(ngrids));
-      offsets[static_cast<size_t>(lev)].reserve(static_cast<size_t>(ngrids));
-      for (int g = 0; g < ngrids; ++g) {
-        int which = 0, count = 0;
-        long long where = 0;
-        try {
-          which = std::stoi(tokens[currentIdx++]);
-          count = std::stoi(tokens[currentIdx++]);
-          where = std::stoll(tokens[currentIdx++]);
-        } catch (...) {
-          return false;
-        }
-        fileNums[static_cast<size_t>(lev)].push_back(which);
-        particleCounts[static_cast<size_t>(lev)].push_back(count);
-        offsets[static_cast<size_t>(lev)].push_back(where);
-      }
-    }
-
-    std::string speciesDir = ParentDirectory(headerPath);
-    bool isSinglePrecision = (tokens[0].find("single") != std::string::npos);
-    bool isCheckpoint = DetectLegacyCheckpoint(speciesDir, dm, nr,
-                                               isSinglePrecision, fileNums,
-                                               particleCounts, offsets);
-
-    info.spatialDim = dm;
-    info.numRealExtra = nr;
-    info.numIntExtra = 0;
-    info.numReal = dm + nr;
-    info.numInt = isCheckpoint ? (2 + dm) : 0;
-    info.finestLevel = finestLevel;
-    info.legacy = true;
-    info.isCheckpoint = isCheckpoint;
-    info.numParticles = numParticles;
-    info.nextId = maxNextId;
-    info.realNames.clear();
-    info.realNames.reserve(static_cast<size_t>(std::max(0, nr)));
-    for (int i = 0; i < nr; ++i) {
-      std::ostringstream name;
-      name << "real" << i;
-      info.realNames.push_back(name.str());
-    }
-    info.intNames.clear();
-    if (isCheckpoint) {
-      info.intNames.push_back("id");
-      info.intNames.push_back("cpu");
-      info.intNames.push_back("cell_x");
-      info.intNames.push_back("cell_y");
-      if (dm == 3) {
-        info.intNames.push_back("cell_z");
-      }
-    }
-    info.numGrids = std::move(numGrids);
-    return true;
-  };
-
-  if ((isLegacyVersion || isUnknownVersion) && tryLegacyFormat()) {
-    return true;
-  }
-
-  error = "Unrecognized particle header format in '" + headerPath + "'.";
+  error = "Unrecognized modern particle header format in '" + headerPath + "'.";
   return false;
 }
-
-struct LegacyParticleHeader {
-  std::string version;
-  int spatialDim{0};
-  int numReal{0};
-  long long numParticles{0};
-  long long maxNextId{0};
-  int finestLevel{0};
-  bool isCheckpoint{false};
-  std::vector<int> gridsPerLevel;
-  struct GridEntry {
-    int which{0};
-    int count{0};
-    long long where{0};
-  };
-  std::vector<GridEntry> gridEntries;
-};
-
-struct LegacyParticleBlock {
-  int count{0};
-  int extraComps{0};
-  int numInt{0};
-  int spatialDim{0};
-  std::vector<double> positions;
-  std::vector<double> extras;
-  std::vector<int> intData;
-};
 
 struct ParticleBlock {
   int count{0};
@@ -1010,214 +782,6 @@ inline long long NextParticleOffsetForFile(
 inline bool PathExists(const std::string &path);
 inline std::string JoinPath(const std::string &parent,
                             const std::string &child);
-
-inline bool ParseLegacyParticleHeader(const std::string &headerPath,
-                                      LegacyParticleHeader &header,
-                                      std::string &error) {
-  error.clear();
-  header = LegacyParticleHeader{};
-
-  std::ifstream in(headerPath);
-  if (!in.is_open()) {
-    error = "Failed to open particle header '" + headerPath + "'.";
-    return false;
-  }
-
-  if (!(in >> header.version >> header.spatialDim >> header.numReal
-        >> header.numParticles >> header.maxNextId >> header.finestLevel)) {
-    error = "Failed to parse legacy particle header '" + headerPath + "'.";
-    return false;
-  }
-
-  if (header.spatialDim <= 0 || header.numReal < 0 || header.finestLevel < 0) {
-    error = "Legacy particle header values out of range in '" + headerPath + "'.";
-    return false;
-  }
-
-  header.gridsPerLevel.resize(static_cast<size_t>(header.finestLevel + 1));
-  for (int lev = 0; lev <= header.finestLevel; ++lev) {
-    int ngrids = 0;
-    if (!(in >> ngrids)) {
-      error = "Failed to read grid count from '" + headerPath + "'.";
-      return false;
-    }
-    header.gridsPerLevel[lev] = ngrids;
-  }
-
-  long long totalGrids = 0;
-  for (int ngrids : header.gridsPerLevel) {
-    totalGrids += ngrids;
-  }
-  header.gridEntries.reserve(static_cast<size_t>(totalGrids));
-  for (long long i = 0; i < totalGrids; ++i) {
-    LegacyParticleHeader::GridEntry entry;
-    if (!(in >> entry.which >> entry.count >> entry.where)) {
-      error = "Failed to read grid entries from '" + headerPath + "'.";
-      return false;
-    }
-    header.gridEntries.push_back(entry);
-  }
-
-  std::vector<std::vector<int>> fileNums(
-      static_cast<size_t>(header.finestLevel + 1));
-  std::vector<std::vector<int>> particleCounts(
-      static_cast<size_t>(header.finestLevel + 1));
-  std::vector<std::vector<long long>> offsets(
-      static_cast<size_t>(header.finestLevel + 1));
-
-  size_t idx = 0;
-  for (int lev = 0; lev <= header.finestLevel; ++lev) {
-    int ngrids = header.gridsPerLevel[static_cast<size_t>(lev)];
-    fileNums[static_cast<size_t>(lev)].reserve(static_cast<size_t>(ngrids));
-    particleCounts[static_cast<size_t>(lev)].reserve(
-        static_cast<size_t>(ngrids));
-    offsets[static_cast<size_t>(lev)].reserve(static_cast<size_t>(ngrids));
-    for (int g = 0; g < ngrids; ++g) {
-      const auto &entry = header.gridEntries[idx++];
-      fileNums[static_cast<size_t>(lev)].push_back(entry.which);
-      particleCounts[static_cast<size_t>(lev)].push_back(entry.count);
-      offsets[static_cast<size_t>(lev)].push_back(entry.where);
-    }
-  }
-
-  std::string speciesDir = ParentDirectory(headerPath);
-  bool isSingle = (header.version.find("single") != std::string::npos);
-  header.isCheckpoint = DetectLegacyCheckpoint(speciesDir, header.spatialDim,
-                                               header.numReal, isSingle,
-                                               fileNums, particleCounts, offsets);
-
-  return true;
-}
-
-inline bool ReadLegacyParticleBlock(const std::string &speciesDir,
-                                    const LegacyParticleHeader &header,
-                                    int level, int gridIndex,
-                                    LegacyParticleBlock &block,
-                                    std::string &error) {
-  error.clear();
-  block = LegacyParticleBlock{};
-  block.spatialDim = header.spatialDim;
-  block.extraComps = header.numReal;
-
-  if (level < 0 || level > header.finestLevel) {
-    error = "Legacy particle level out of range.";
-    return false;
-  }
-
-  long long offset = 0;
-  for (int lev = 0; lev < level; ++lev) {
-    offset += header.gridsPerLevel[lev];
-  }
-  if (gridIndex < 0 || gridIndex >= header.gridsPerLevel[level]) {
-    error = "Legacy particle grid index out of range.";
-    return false;
-  }
-  const auto &entry =
-      header.gridEntries.at(static_cast<size_t>(offset + gridIndex));
-  block.count = entry.count;
-  block.numInt = header.isCheckpoint ? (2 + header.spatialDim) : 0;
-  if (block.count <= 0) {
-    return true;
-  }
-
-  char fileName5[16];
-  std::snprintf(fileName5, sizeof(fileName5), "DATA_%05d", entry.which);
-  char fileName4[16];
-  std::snprintf(fileName4, sizeof(fileName4), "DATA_%04d", entry.which);
-
-  std::string levelDir = JoinPath(speciesDir, "Level_" + std::to_string(level));
-  std::string filePath = JoinPath(levelDir, fileName5);
-  if (!PathExists(filePath)) {
-    std::string altPath = JoinPath(levelDir, fileName4);
-    if (PathExists(altPath)) {
-      filePath = altPath;
-    }
-  }
-  if (!PathExists(filePath)) {
-    error = "Legacy particle data file missing: '" + filePath + "'.";
-    return false;
-  }
-
-  std::ifstream in(filePath, std::ios::in | std::ios::binary);
-  if (!in.is_open()) {
-    error = "Failed to open legacy particle data file '" + filePath + "'.";
-    return false;
-  }
-  in.seekg(entry.where, std::ios::beg);
-
-  if (block.numInt > 0) {
-    block.intData.resize(static_cast<size_t>(block.numInt) *
-                         static_cast<size_t>(block.count));
-    size_t totalInts = block.intData.size();
-    std::vector<int32_t> buffer(totalInts);
-    in.read(reinterpret_cast<char *>(buffer.data()),
-            static_cast<std::streamsize>(totalInts * sizeof(int32_t)));
-    if (!in) {
-      error =
-          "Failed to read legacy particle integer data from '" + filePath + "'.";
-      return false;
-    }
-    for (size_t i = 0; i < totalInts; ++i) {
-      block.intData[i] = static_cast<int>(buffer[i]);
-    }
-  }
-
-  const int totalReals = header.spatialDim + header.numReal;
-  if (totalReals <= 0) {
-    error = "Legacy particle header has no real components.";
-    return false;
-  }
-
-  bool isSingle = header.version.find("_single") != std::string::npos;
-  const size_t totalValues =
-      static_cast<size_t>(block.count) * static_cast<size_t>(totalReals);
-
-  block.positions.resize(static_cast<size_t>(block.count) * 3, 0.0);
-  block.extras.resize(static_cast<size_t>(block.count) *
-                          static_cast<size_t>(block.extraComps),
-                      0.0);
-
-  if (isSingle) {
-    std::vector<float> buffer(totalValues);
-    in.read(reinterpret_cast<char *>(buffer.data()),
-            static_cast<std::streamsize>(sizeof(float) * buffer.size()));
-    if (!in) {
-      error = "Failed to read legacy particle float data from '" + filePath + "'.";
-      return false;
-    }
-    for (int i = 0; i < block.count; ++i) {
-      size_t base = static_cast<size_t>(i) * totalReals;
-      for (int axis = 0; axis < header.spatialDim && axis < 3; ++axis) {
-        block.positions[i * 3 + axis] =
-            static_cast<double>(buffer[base + axis]);
-      }
-      for (int c = 0; c < block.extraComps; ++c) {
-        block.extras[i * block.extraComps + c] =
-            static_cast<double>(buffer[base + header.spatialDim + c]);
-      }
-    }
-  } else {
-    std::vector<double> buffer(totalValues);
-    in.read(reinterpret_cast<char *>(buffer.data()),
-            static_cast<std::streamsize>(sizeof(double) * buffer.size()));
-    if (!in) {
-      error = "Failed to read legacy particle double data from '" + filePath + "'.";
-      return false;
-    }
-    for (int i = 0; i < block.count; ++i) {
-      size_t base = static_cast<size_t>(i) * totalReals;
-      for (int axis = 0; axis < header.spatialDim && axis < 3; ++axis) {
-        block.positions[i * 3 + axis] = buffer[base + axis];
-      }
-      for (int c = 0; c < block.extraComps; ++c) {
-        block.extras[i * block.extraComps + c] =
-            buffer[base + header.spatialDim + c];
-      }
-    }
-  }
-
-  return true;
-}
 
 inline bool ReadParticleBlock(const avtamrexFileFormat::ParticleSpeciesInfo &species,
                               int level, int gridIndex,
@@ -1928,58 +1492,7 @@ vtkDataSet *avtamrexFileFormat::GetParticleMesh(
   debug2 << "[amrex-plugin] GetParticleMesh species='"
          << species.speciesName << "' domain=" << domain
          << " level=" << patch.level
-         << " fabIndex=" << patch.fabIndex
-         << " legacy=" << species.legacyHeader << "\n";
-  if (species.legacyHeader) {
-    LegacyParticleHeader legacy;
-    std::string parseError;
-    std::string headerPath =
-        JoinPath(JoinPath(plotfilePaths_[timeState], species.speciesName),
-                 "Header");
-    if (!ParseLegacyParticleHeader(headerPath, legacy, parseError)) {
-      debug1 << "[amrex-plugin] Failed to parse legacy particle header '"
-             << headerPath << "': " << parseError << "\n";
-      EXCEPTION1(InvalidFilesException, headerPath.c_str());
-    }
-
-    LegacyParticleBlock block;
-    std::string readError;
-    std::string speciesDir =
-        JoinPath(plotfilePaths_[timeState], species.speciesName);
-    if (!ReadLegacyParticleBlock(speciesDir, legacy, patch.level,
-                                 patch.fabIndex, block, readError)) {
-      debug1 << "[amrex-plugin] " << readError << "\n";
-      EXCEPTION1(InvalidFilesException, species.meshName.c_str());
-    }
-
-    vtkNew<vtkPoints> points;
-    vtkNew<vtkDoubleArray> coords;
-    coords->SetNumberOfComponents(3);
-    coords->SetNumberOfTuples(block.count);
-    double *buffer = coords->GetPointer(0);
-    for (int i = 0; i < block.count; ++i) {
-      vtkIdType base = static_cast<vtkIdType>(i) * 3;
-      buffer[base] = block.positions[i * 3];
-      buffer[base + 1] = block.positions[i * 3 + 1];
-      buffer[base + 2] = block.positions[i * 3 + 2];
-    }
-    points->SetData(coords);
-
-    vtkNew<vtkPolyData> poly;
-    poly->SetPoints(points);
-    vtkNew<vtkCellArray> verts;
-    if (block.count > 0) {
-      verts->AllocateExact(block.count, 1);
-      for (vtkIdType i = 0; i < block.count; ++i) {
-        verts->InsertNextCell(1);
-        verts->InsertCellPoint(i);
-      }
-    }
-    poly->SetVerts(verts);
-    vtkPolyData *dataset = poly.GetPointer();
-    dataset->Register(nullptr);
-    return dataset;
-  }
+         << " fabIndex=" << patch.fabIndex << "\n";
   ParticleBlock block;
   std::string readError;
   if (!ReadParticleBlock(species, patch.level, patch.fabIndex, block, readError)) {
@@ -2068,58 +1581,6 @@ vtkDataArray *avtamrexFileFormat::GetParticleVar(
          << " comp=" << varInfo.componentIndex << "\n";
   auto &speciesMap = particleSpeciesCache_.at(timeState);
   auto speciesIt = speciesMap.find(varInfo.speciesName);
-  if (speciesIt != speciesMap.end() && speciesIt->second.legacyHeader) {
-    LegacyParticleHeader legacy;
-    std::string parseError;
-    std::string headerPath =
-        JoinPath(JoinPath(plotfilePaths_[timeState], varInfo.speciesName),
-                 "Header");
-    if (!ParseLegacyParticleHeader(headerPath, legacy, parseError)) {
-      debug1 << "[amrex-plugin] Failed to parse legacy particle header '"
-             << headerPath << "': " << parseError << "\n";
-      EXCEPTION1(InvalidFilesException, headerPath.c_str());
-    }
-
-    LegacyParticleBlock block;
-    std::string readError;
-    std::string speciesDir =
-        JoinPath(plotfilePaths_[timeState], varInfo.speciesName);
-    if (!ReadLegacyParticleBlock(speciesDir, legacy, patch.level,
-                                 patch.fabIndex, block, readError)) {
-      debug1 << "[amrex-plugin] " << readError << "\n";
-      EXCEPTION1(InvalidFilesException, varInfo.meshName.c_str());
-    }
-
-    if (varInfo.isReal) {
-      if (varInfo.componentIndex < 0 ||
-          varInfo.componentIndex >= block.extraComps) {
-        EXCEPTION1(InvalidVariableException, varInfo.meshName.c_str());
-      }
-
-      vtkDoubleArray *array = vtkDoubleArray::New();
-      array->SetNumberOfComponents(1);
-      array->SetNumberOfTuples(block.count);
-      double *buffer = array->GetPointer(0);
-      for (int i = 0; i < block.count; ++i) {
-        buffer[i] = block.extras[i * block.extraComps + varInfo.componentIndex];
-      }
-      return array;
-    } else {
-      if (varInfo.componentIndex < 0 ||
-          varInfo.componentIndex >= block.numInt) {
-        EXCEPTION1(InvalidVariableException, varInfo.meshName.c_str());
-      }
-
-      vtkIntArray *array = vtkIntArray::New();
-      array->SetNumberOfComponents(1);
-      array->SetNumberOfTuples(block.count);
-      int *buffer = array->GetPointer(0);
-      for (int i = 0; i < block.count; ++i) {
-        buffer[i] = block.intData[i * block.numInt + varInfo.componentIndex];
-      }
-      return array;
-    }
-  }
   if (speciesIt == speciesMap.end()) {
     EXCEPTION1(InvalidVariableException, varInfo.meshName.c_str());
   }
@@ -2229,49 +1690,6 @@ vtkDataArray *avtamrexFileFormat::GetParticleVectorVar(
          << " comps=[" << comps.str() << "]\n";
   auto &speciesMap = particleSpeciesCache_.at(timeState);
   auto speciesIt = speciesMap.find(varInfo.speciesName);
-  if (speciesIt != speciesMap.end() && speciesIt->second.legacyHeader) {
-    if (!varInfo.isReal) {
-      EXCEPTION1(InvalidVariableException, varInfo.meshName.c_str());
-    }
-    LegacyParticleHeader legacy;
-    std::string parseError;
-    std::string headerPath =
-        JoinPath(JoinPath(plotfilePaths_[timeState], varInfo.speciesName),
-                 "Header");
-    if (!ParseLegacyParticleHeader(headerPath, legacy, parseError)) {
-      debug1 << "[amrex-plugin] Failed to parse legacy particle header '"
-             << headerPath << "': " << parseError << "\n";
-      EXCEPTION1(InvalidFilesException, headerPath.c_str());
-    }
-
-    LegacyParticleBlock block;
-    std::string readError;
-    std::string speciesDir =
-        JoinPath(plotfilePaths_[timeState], varInfo.speciesName);
-    if (!ReadLegacyParticleBlock(speciesDir, legacy, patch.level,
-                                 patch.fabIndex, block, readError)) {
-      debug1 << "[amrex-plugin] " << readError << "\n";
-      EXCEPTION1(InvalidFilesException, varInfo.meshName.c_str());
-    }
-
-    int numComponents = static_cast<int>(varInfo.componentIndices.size());
-    vtkDoubleArray *array = vtkDoubleArray::New();
-    array->SetNumberOfComponents(numComponents);
-    array->SetNumberOfTuples(block.count);
-    double *buffer = array->GetPointer(0);
-    for (int i = 0; i < block.count; ++i) {
-      vtkIdType base = static_cast<vtkIdType>(i) * numComponents;
-      for (int c = 0; c < numComponents; ++c) {
-        int comp = varInfo.componentIndices[c];
-        if (comp < 0 || comp >= block.spatialDim) {
-          buffer[base + c] = 0.0;
-        } else {
-          buffer[base + c] = block.positions[i * 3 + comp];
-        }
-      }
-    }
-    return array;
-  }
   if (speciesIt == speciesMap.end()) {
     EXCEPTION1(InvalidVariableException, varInfo.meshName.c_str());
   }
@@ -2721,19 +2139,8 @@ void avtamrexFileFormat::BuildParticleHierarchy(avtDatabaseMetaData *md,
                               header.intNames.begin(),
                               header.intNames.end());
     info.spatialDim = header.spatialDim;
-    info.legacyHeader = header.legacy;
 
     std::vector<int> numGrids = info.header.numGrids;
-    if (numGrids.empty() && info.legacyHeader) {
-      LegacyParticleHeader legacy;
-      std::string legacyError;
-      if (ParseLegacyParticleHeader(headerPath, legacy, legacyError)) {
-        numGrids = legacy.gridsPerLevel;
-      } else {
-        debug1 << "[amrex-plugin] Failed to parse legacy particle header '"
-               << headerPath << "': " << legacyError << "\n";
-      }
-    }
     if (numGrids.empty()) {
       debug1 << "[amrex-plugin] Particle header '" << headerPath
              << "' missing grid metadata; skipping hierarchy build\n";
@@ -2796,8 +2203,7 @@ void avtamrexFileFormat::BuildParticleHierarchy(avtDatabaseMetaData *md,
       ParticleVarInfo varInfo;
       varInfo.meshName = info.meshName;
       varInfo.speciesName = entry;
-      const int legacyOffset = info.legacyHeader ? 0 : info.spatialDim;
-      varInfo.componentIndex = static_cast<int>(idx) + legacyOffset;
+      varInfo.componentIndex = static_cast<int>(idx) + info.spatialDim;
       varInfo.isReal = true;
       particleVarMap_[varName] = varInfo;
       if (md != nullptr) {
