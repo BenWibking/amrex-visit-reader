@@ -248,7 +248,7 @@ class AmrexRuntime {
 public:
   static void Retain() {
     std::lock_guard<std::mutex> guard(mutex_);
-    if (refCount_ == 0) {
+    if (refCount_ == 0 && !initialized_) {
       int argc = 0;
       char **argv = nullptr;
 #ifdef AMREX_USE_MPI
@@ -266,8 +266,9 @@ public:
     if (refCount_ > 0) {
       --refCount_;
       if (refCount_ == 0 && initialized_) {
-        amrex::Finalize();
-        initialized_ = false;
+        // VisIt controls MPI process lifetime. Finalizing AMReX from plugin
+        // teardown can race with later MPI activity in the engine process.
+        // Keep AMReX initialized until process exit.
       }
     }
   }
