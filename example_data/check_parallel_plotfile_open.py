@@ -73,7 +73,7 @@ def main():
 
     if not ensure_parallel_engine():
         print("FAIL: Unable to start a parallel compute engine.")
-        return
+        return 1
 
     engines = GetEngineList()
     props = GetEngineProperties(engines[0])
@@ -88,13 +88,16 @@ def main():
 
     if not scalar_names:
         print("FAIL: No scalar variables found in the dataset.")
-        return
+        return 1
 
     failures = []
     for name in scalar_names:
         try:
             GetLastError(1)
             AddPlot("Pseudocolor", name)
+            p = PseudocolorAttributes()
+            p.scaling = p.Linear
+            SetPlotOptions(p)
             DrawPlots()
             Query("MinMax")
             last_error = GetLastError()
@@ -112,11 +115,14 @@ def main():
         for name, msg in failures:
             print(f"  {name}: {msg}")
         print("FAIL: One or more variables failed to render.")
+        exit_code = 1
     else:
         print("PASS: All scalar variables rendered and queried.")
+        exit_code = 0
 
     DeleteAllPlots()
+    return exit_code
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

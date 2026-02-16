@@ -94,7 +94,37 @@ public:
   void GetCycles(std::vector<int> &) override;
   void GetTimes(std::vector<double> &) override;
 
-  enum class DatasetType { Field = 0 };
+  enum class DatasetType { Field = 0, Particle = 1 };
+
+  struct ParticleHeaderInfo {
+    int spatialDim{0};
+    int numRealExtra{0};
+    int numIntExtra{0};
+    int numReal{0};
+    int numInt{0};
+    int finestLevel{0};
+    bool isSingle{false};
+    long long numParticles{0};
+    long long nextId{0};
+    std::string version;
+    std::vector<std::string> realNames;
+    std::vector<std::string> intNames;
+    std::vector<int> numGrids;
+    std::vector<std::vector<int>> fileNums;
+    std::vector<std::vector<int>> particleCounts;
+    std::vector<std::vector<long long>> offsets;
+  };
+
+  struct ParticleSpeciesInfo {
+    std::string meshName;
+    std::string speciesName;
+    std::string baseMeshName;
+    std::vector<std::string> realComponents;
+    std::vector<std::string> intComponents;
+    ParticleHeaderInfo header;
+    std::string speciesDir;
+    int spatialDim{0};
+  };
 
 protected:
   // NOTE: VisIt calls this reader from a single thread per instance.
@@ -146,6 +176,22 @@ protected:
     }
   };
 
+  struct ParticleVarInfo {
+    std::string meshName;
+    std::string speciesName;
+    int componentIndex{0};
+    bool isReal{true};
+  };
+
+  struct ParticleVectorVarInfo {
+    std::string meshName;
+    std::string speciesName;
+    std::vector<int> componentIndices;
+    bool isReal{true};
+    bool isPosition{false};
+  };
+
+
   std::vector<std::string> plotfilePaths_;
   std::vector<unsigned long long> iterationIndex_;
   mutable std::vector<double> timeValues_;
@@ -162,6 +208,12 @@ protected:
   std::unordered_map<std::string, std::tuple<DatasetType, std::string>> meshMap_;
   std::vector<std::unordered_map<std::string, MeshPatchHierarchy>>
       meshHierarchyCache_;
+  std::vector<std::unordered_map<std::string, ParticleSpeciesInfo>>
+      particleSpeciesCache_;
+  std::vector<bool> particleHierarchyInitialized_;
+  std::unordered_map<std::string, ParticleVarInfo> particleVarMap_;
+  std::unordered_map<std::string, ParticleVectorVarInfo> particleVectorVarMap_;
+  int particleVarMapsTimeState_{-1};
 
   void PopulateDatabaseMetaData(avtDatabaseMetaData *, int) override;
   void *GetAuxiliaryData(const char *var, int timestep, int domain,
@@ -169,9 +221,22 @@ protected:
                          DestructorFunction &) override;
 
   void EnsureHierarchyInitialized(int timeState);
+  void EnsureParticleHierarchyInitialized(int timeState);
+  void EnsureParticleVarMapsInitialized(int timeState);
   void PopulateHierarchyCache(int timeState);
   void BuildFieldHierarchy(avtDatabaseMetaData *md,
                            amrex::PlotFileData &plotfile, int timeState);
+  void BuildParticleHierarchy(avtDatabaseMetaData *md,
+                              amrex::PlotFileData &plotfile, int timeState);
+  vtkDataSet *GetParticleMesh(int timeState, int domain,
+                              const ParticleSpeciesInfo &species,
+                              const MeshPatchHierarchy &hierarchy) const;
+  vtkDataArray *GetParticleVar(int timeState, int domain,
+                               const ParticleVarInfo &varInfo,
+                               const MeshPatchHierarchy &hierarchy) const;
+  vtkDataArray *GetParticleVectorVar(int timeState, int domain,
+                                     const ParticleVectorVarInfo &varInfo,
+                                     const MeshPatchHierarchy &hierarchy) const;
   MeshPatchHierarchy BuildHierarchyFromPlotfile(const std::string &visitMeshName,
                                                 amrex::PlotFileData &plotfile);
   std::pair<std::string, int>

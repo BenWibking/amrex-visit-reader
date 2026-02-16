@@ -47,6 +47,7 @@ function(configure_amrex_plugin target_name)
     target_include_directories(${target_name} PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${amrex_SOURCE_DIR}/Src/Extern/amrdata
+        ${amrex_SOURCE_DIR}/Src/Particle
         ${VISIT_DATABASE_INCLUDES})
 endfunction()
 
@@ -75,7 +76,7 @@ set(AMReX_AMRDATA ON CACHE BOOL "" FORCE)
 set(AMReX_FORTRAN OFF CACHE BOOL "" FORCE)
 set(AMReX_EB OFF CACHE BOOL "" FORCE)
 set(AMReX_LINEAR_SOLVERS OFF CACHE BOOL "" FORCE)
-set(AMReX_PARTICLES OFF CACHE BOOL "" FORCE)
+set(AMReX_PARTICLES ON CACHE BOOL "" FORCE)
 set(AMReX_FFT OFF CACHE BOOL "" FORCE)
 set(AMReX_SPACEDIM 3 CACHE STRING "" FORCE)
 
