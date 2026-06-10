@@ -1480,8 +1480,8 @@ avtamrexFileFormat::GetVisMF(int timeState, int level) const {
   auto &vismfPtr = plotfileImpl->m_vismf[level];
   if (!vismfPtr) {
     std::string mfName = plotfileImpl->m_mf_name[level];
-    if (!mfName.empty() && mfName[0] != '/') {
-      mfName = plotfilePaths_[timeState] + "/" + mfName;
+    if (!mfName.empty() && !IsAbsolutePath(mfName)) {
+      mfName = JoinPath(plotfilePaths_[timeState], mfName);
     }
     debug1 << "[amrex-plugin] GetVisMF constructing VisMF timeState="
            << timeState << " level=" << level << " mfName='" << mfName
@@ -1857,10 +1857,10 @@ std::string avtamrexFileFormat::GetMultiFabName(int timeState,
   }
 
   std::string mfName = plotfile->m_mf_name[level];
-  if (!mfName.empty() && mfName[0] != '/') {
+  if (!mfName.empty() && !IsAbsolutePath(mfName)) {
     // Plotfile headers store relative MultiFab paths; make them absolute
     // so parallel engines don't depend on the current working directory.
-    mfName = plotfilePaths_[timeState] + "/" + mfName;
+    mfName = JoinPath(plotfilePaths_[timeState], mfName);
   }
   mfNameCache_.emplace(key, mfName);
   return mfName;
@@ -1997,6 +1997,11 @@ void avtamrexFileFormat::BuildFieldHierarchy(avtDatabaseMetaData *md,
   }
 
   const MeshPatchHierarchy &hierarchy = it->second;
+  // PopulateDatabaseMetaData clears meshMap_ on every call, but
+  // PopulateHierarchyCache only runs when the hierarchy cache is empty.
+  // Re-register the field mesh here so the meshMap_ entry exists whenever
+  // metadata is populated, regardless of hierarchy cache state.
+  meshMap_[meshName] = std::tuple(DatasetType::Field, meshName);
 
   if (md != nullptr) {
     avtMeshMetaData *meshMd = new avtMeshMetaData;
