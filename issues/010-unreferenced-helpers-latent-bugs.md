@@ -1,6 +1,13 @@
 # Unreferenced helper functions contain latent bugs
 
 - Severity: Low
+- Status: Fixed in place (functions kept, not deleted): `ParsePattern`
+  and `ParseMeshLevel` guard `std::stoi` with try/catch, `ParseMeshLevel`
+  casts to unsigned char before `std::isdigit`, and
+  `BuildDomainBoundaryList` skips patches on a different level.
+  `ResolveDescriptorPaths` also uses `std::stoull` now (see issue 012).
+  The functions remain unreferenced; verification is compilation plus
+  the full smoke suite.
 - Component: `avtamrexFileFormat.C` (`ResolveDescriptorPaths`, `ParsePattern`, `ParseMeshLevel`, `BuildDomainBoundaryList`)
 
 ## Summary

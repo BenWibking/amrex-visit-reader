@@ -1,6 +1,10 @@
 # Plugin declares `DB_TYPE_MTSD` but implements an MTMD file format
 
 - Severity: Low
+- Status: Fixed — `amrex.xml` declares `dbtype="MTMD"` and
+  `GetDatabaseType()` returns `DB_TYPE_MTMD`, matching the
+  `avtMTMDFileFormat` implementation. Verified: full smoke suite passes
+  (open, metadata, time navigation, parallel engine).
 - Component: `amrex.xml`, `amrexCommonPluginInfo.C` (`GetDatabaseType`, `SetupDatabase`)
 
 ## Summary

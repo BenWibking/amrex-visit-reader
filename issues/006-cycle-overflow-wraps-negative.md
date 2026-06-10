@@ -1,6 +1,9 @@
 # Cycle numbers can overflow and wrap in `GetCycles`
 
 - Severity: Low
+- Status: Fixed — values above INT_MAX clamp to INT_MAX with a debug1
+  warning. Regression-tested by `smoke_test_large_cycles.sh`: a symlinked
+  timestep named `plt18446744073709551615` reports cycle 2147483647.
 - Component: `avtamrexFileFormat.C` (`GetCycles`)
 
 ## Summary

@@ -1,6 +1,10 @@
 # `ParsePlotfileDirectoryName` parses unsigned timestep suffixes with signed `std::stoll`
 
 - Severity: Low
+- Status: Fixed — both `ParsePlotfileDirectoryName` and
+  `ResolveDescriptorPaths` use `std::stoull`. Regression-tested by
+  `smoke_test_large_cycles.sh`: before the fix the ULLONG_MAX-suffixed
+  plotfile was dropped (1 timestep); after, the series has 2.
 - Component: `avtamrexFileFormat.C` (`ParsePlotfileDirectoryName`, also `ResolveDescriptorPaths`)
 
 ## Summary

@@ -10,8 +10,8 @@ Scope: plugin sources, scripts, and helpers. Vendored code under `extern/` is ex
 - [x] `ComputeLogicalExtents` (line 79)
 - [x] `IsChildPatch` (line 102)
 - [x] `MeshIsNodeCentered` (line 112)
-- [x] `ComputeGlobalCellDimensions` (line 122)
-- [x] `ComputeGlobalNodeDimensions` (line 147)
+- [x] `ComputeGlobalCellDimensions` (line 122) — renamed `ComputeLevelCellDimensions` (level-scoped) by the fix for issue 009
+- [x] `ComputeGlobalNodeDimensions` (line 147) — renamed `ComputeLevelNodeDimensions` (level-scoped) by the fix for issue 009
 - [x] `ComputePatchCellCounts` (line 162)
 - [x] `ComputePatchNodeCounts` (line 182)
 - [x] `IsSeparator` (line 205)
@@ -193,10 +193,10 @@ Issues filed during this pass (see `issues/`):
 
 - 007 — `PopulateDatabaseMetaData` clears `meshMap_` but only repopulates the field mesh on a cold hierarchy cache. Fixed as defensive hardening; verification showed the engine only populates metadata on first visit per timestep, so severity was downgraded to Low (see the issue file).
 - 008 — `LoadScalarPatchData` strided copy ignores the offset between the FAB box and the patch box (misaligned data for FABs with ghost cells). Fixed; regression-tested with a synthetic ghost-cell plotfile (`make_ghost_plotfile.cpp`, `smoke_test_ghost_cells.sh`).
-- 009 — `BuildGlobalZoneIds`/`BuildGlobalNodeIds` produce IDs that collide across AMR levels.
-- 010 — Unreferenced helpers (`ResolveDescriptorPaths`/`ParsePattern`, `ParseMeshLevel`, `BuildDomainBoundaryList`) contain latent bugs.
-- 011 — `amrex.xml` declares `dbtype="MTSD"` while the plugin implements MTMD.
-- 012 — `ParsePlotfileDirectoryName` parses unsigned timestep suffixes with `std::stoll`.
+- 009 — `BuildGlobalZoneIds`/`BuildGlobalNodeIds` produce IDs that collide across AMR levels. Fixed: per-level dimensions plus a cumulative per-level base offset.
+- 010 — Unreferenced helpers (`ResolveDescriptorPaths`/`ParsePattern`, `ParseMeshLevel`, `BuildDomainBoundaryList`) contain latent bugs. Fixed in place; functions remain unreferenced.
+- 011 — `amrex.xml` declares `dbtype="MTSD"` while the plugin implements MTMD. Fixed: XML and `GetDatabaseType` now say MTMD.
+- 012 — `ParsePlotfileDirectoryName` parses unsigned timestep suffixes with `std::stoll`. Fixed with `std::stoull`; regression-tested by `smoke_test_large_cycles.sh`, which also covers the issue-006 cycle clamp.
 
 Pre-existing issues 001–006 cover: Windows absolute MultiFab paths, `GetMesh` particle lazy-init ordering, inverse-ghost smoke-test exit code, clearcache smoke-test warning downgrade, build scripts dropping extra CMake args, and `GetCycles` int overflow.
 

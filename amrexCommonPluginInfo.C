@@ -20,7 +20,7 @@
 DatabaseType
 amrexCommonPluginInfo::GetDatabaseType()
 {
-    return DB_TYPE_MTSD;
+    return DB_TYPE_MTMD;
 }
 
 // ****************************************************************************

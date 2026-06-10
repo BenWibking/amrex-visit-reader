@@ -1,6 +1,12 @@
 # Global zone/node IDs collide across AMR levels
 
 - Severity: Low
+- Status: Fixed — the dimension helpers are now level-scoped
+  (`ComputeLevelCellDimensions`/`ComputeLevelNodeDimensions`) and each
+  level's IDs are offset by the cumulative ID count of all coarser
+  levels, so IDs are unique across the hierarchy. No CLI-reachable
+  consumer of global IDs exists to test directly; verified by build and
+  the full smoke suite (no regressions).
 - Component: `avtamrexFileFormat.C` (`BuildGlobalZoneIds`, `BuildGlobalNodeIds`)
 
 ## Summary
