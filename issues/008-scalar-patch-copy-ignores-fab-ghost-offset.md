@@ -1,6 +1,13 @@
 # `LoadScalarPatchData` reads misaligned data when FAB boxes include ghost cells
 
 - Severity: Medium
+- Status: Fixed — the strided copy now offsets by `patch.offset - fab.box().smallEnd()`
+  in all three axes. Verified with a new regression test: `make_ghost_plotfile.cpp`
+  generates a 16^3 plotfile whose MultiFab is written with one ghost cell
+  (interior `i + 100j + 10000k`, ghosts `-12345`), and
+  `smoke_test_ghost_cells.sh` asserts MinMax == (0, 151515). Against the
+  unfixed reader the test reports (-12345, 141414) — the sentinel leaks in and
+  all values shift by the ghost width — confirming both the bug and the fix.
 - Component: `avtamrexFileFormat.C` (`LoadScalarPatchData`)
 
 ## Summary

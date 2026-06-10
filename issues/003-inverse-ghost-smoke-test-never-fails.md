@@ -1,6 +1,8 @@
 # `check_inverse_ghost_zones.py` reports failure text but exits with success
 
 - Severity: Medium
+- Status: Fixed — `main()` returns 0/1 (including on query failure) and is
+  invoked via `sys.exit(main())`. Verified: PASS run exits 0.
 - Component: `example_data/check_inverse_ghost_zones.py`
 
 ## Summary

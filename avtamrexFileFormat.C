@@ -3323,15 +3323,24 @@ vtkDataArray *avtamrexFileFormat::LoadScalarPatchData(
   if (nx == fabNx && ny == fabNy && nz == fabNz) {
     std::copy(src, src + static_cast<vtkIdType>(tupleCount), buffer);
   } else {
+    // The FAB box can be larger than the patch's valid box (e.g. MultiFabs
+    // written with ghost cells), so shift each index by the FAB-relative
+    // start of the valid region.
+    const int startX =
+        static_cast<int>(patch.offset.size() > 0 ? patch.offset[0] : loX) - loX;
+    const int startY =
+        static_cast<int>(patch.offset.size() > 1 ? patch.offset[1] : loY) - loY;
+    const int startZ =
+        static_cast<int>(patch.offset.size() > 2 ? patch.offset[2] : loZ) - loZ;
     vtkIdType idx = 0;
     for (int k = 0; k < nz; ++k) {
-      int kk = loZ + (patch.spatialDim >= 3 ? k : 0);
-      const int kOffset = kk - loZ;
+      const int kOffset = startZ + (patch.spatialDim >= 3 ? k : 0);
       for (int j = 0; j < ny; ++j) {
-        int jj = loY + (patch.spatialDim >= 2 ? j : 0);
-        const int jOffset = jj - loY;
+        const int jOffset = startY + (patch.spatialDim >= 2 ? j : 0);
         const amrex::Real *row =
-            src + (kOffset * fabNy + jOffset) * fabNx;
+            src +
+            (static_cast<std::ptrdiff_t>(kOffset) * fabNy + jOffset) * fabNx +
+            startX;
         std::copy(row, row + nx, buffer + idx);
         idx += nx;
       }
@@ -3489,6 +3498,14 @@ vtkDataSet *avtamrexFileFormat::GetMesh(int timeState, int domain,
   EnsureHierarchyInitialized(timeState);
 
   auto meshTypeIt = meshMap_.find(visit_meshname);
+  if (meshTypeIt == meshMap_.end() &&
+      std::string(visit_meshname).rfind("particles/", 0) == 0) {
+    // Particle meshes are registered lazily by BuildParticleHierarchy, so a
+    // direct particle mesh request can arrive before the map is built.
+    // Initialize the particle hierarchy for this timestep and retry.
+    EnsureParticleHierarchyInitialized(timeState);
+    meshTypeIt = meshMap_.find(visit_meshname);
+  }
   if (meshTypeIt == meshMap_.end()) {
     debug1 << "[amrex-plugin] GetMesh missing mesh '" << meshName << "'\n";
     EXCEPTION1(InvalidVariableException, visit_meshname);

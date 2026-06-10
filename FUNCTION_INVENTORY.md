@@ -181,7 +181,7 @@ Scope: plugin sources, scripts, and helpers. Vendored code under `extern/` is ex
 ## Shell scripts
 
 - [x] `build_macos.sh` — issue 005's fix already applied here (`"$@"`)
-- [x] `build_andes.sh` — still passes only `$1`, see issue 005
+- [x] `build_andes.sh` — issue 005 fixed (now forwards `"$@"`)
 - [x] `fetch_mpich_headers.sh`
 - [x] `smoke_test.sh`
 - [x] `smoke_test_particles.sh`
@@ -192,7 +192,7 @@ Scope: plugin sources, scripts, and helpers. Vendored code under `extern/` is ex
 Issues filed during this pass (see `issues/`):
 
 - 007 — `PopulateDatabaseMetaData` clears `meshMap_` but only repopulates the field mesh on a cold hierarchy cache. Fixed as defensive hardening; verification showed the engine only populates metadata on first visit per timestep, so severity was downgraded to Low (see the issue file).
-- 008 — `LoadScalarPatchData` strided copy ignores the offset between the FAB box and the patch box (misaligned data for FABs with ghost cells).
+- 008 — `LoadScalarPatchData` strided copy ignores the offset between the FAB box and the patch box (misaligned data for FABs with ghost cells). Fixed; regression-tested with a synthetic ghost-cell plotfile (`make_ghost_plotfile.cpp`, `smoke_test_ghost_cells.sh`).
 - 009 — `BuildGlobalZoneIds`/`BuildGlobalNodeIds` produce IDs that collide across AMR levels.
 - 010 — Unreferenced helpers (`ResolveDescriptorPaths`/`ParsePattern`, `ParseMeshLevel`, `BuildDomainBoundaryList`) contain latent bugs.
 - 011 — `amrex.xml` declares `dbtype="MTSD"` while the plugin implements MTMD.

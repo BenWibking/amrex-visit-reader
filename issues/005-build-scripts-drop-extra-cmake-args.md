@@ -1,6 +1,9 @@
 # Build scripts drop all extra CMake flags except the first one
 
 - Severity: Medium
+- Status: Fixed — `build_andes.sh` now forwards `"$@"`; `build_macos.sh`
+  had already been fixed the same way. Verified with `bash -n` (Andes
+  build not runnable from this machine).
 - Component: `build_macos.sh`, `build_andes.sh`
 
 ## Summary

@@ -46,7 +46,7 @@ cmake -S . -B build \
   -DVISIT_BINARY_DIR="${VISIT_ROOT}/bin" \
   -DMPICH_HEADERS_ROOT="${MPICH_HEADERS_ROOT}" \
   -DMPI_LIBRARY_DIR="${MPI_LIBRARY_DIR}" \
-  -DAMReX_PIC=ON -DAMReX_BUILD_SHARED_LIBS=ON $1
+  -DAMReX_PIC=ON -DAMReX_BUILD_SHARED_LIBS=ON "$@"
 cmake --build build -j16
 
 # the plugin should actually be installed to ~/.visit in the build step

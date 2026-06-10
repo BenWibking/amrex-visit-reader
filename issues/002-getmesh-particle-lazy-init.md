@@ -1,6 +1,10 @@
 # `GetMesh` can reject valid particle meshes before lazy particle initialization
 
 - Severity: Medium
+- Status: Fixed — `GetMesh` now retries the `meshMap_` lookup after
+  `EnsureParticleHierarchyInitialized(timeState)` when the requested name
+  starts with `particles/`. The lazy ordering is hard to trigger from the
+  CLI, so verification is build + full smoke suite (no regressions).
 - Component: `avtamrexFileFormat.C` (`GetMesh`)
 
 ## Summary
