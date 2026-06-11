@@ -2031,6 +2031,7 @@ void avtamrexFileFormat::BuildFieldHierarchy(avtDatabaseMetaData *md,
     meshMd->groupTitle = "levels";
     meshMd->groupPieceName = "level";
     meshMd->blockNames = hierarchy.blockNames;
+    meshMd->loadBalanceScheme = LOAD_BALANCE_STRIDE_ACROSS_BLOCKS;
     meshMd->containsGhostZones = AVT_HAS_GHOSTS;
     meshMd->presentGhostZoneTypes = (1 << AVT_NESTING_GHOST_ZONES);
     md->Add(meshMd);
@@ -2211,6 +2212,7 @@ void avtamrexFileFormat::BuildParticleHierarchy(avtDatabaseMetaData *md,
       meshMd->groupTitle = "levels";
       meshMd->groupPieceName = "level";
       meshMd->blockNames = particleHierarchy.blockNames;
+      meshMd->loadBalanceScheme = LOAD_BALANCE_STRIDE_ACROSS_BLOCKS;
       meshMd->containsGhostZones = AVT_NO_GHOSTS;
       md->Add(meshMd);
       intVector blockIds = particleHierarchy.groupIds;
