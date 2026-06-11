@@ -230,20 +230,14 @@ def main():
 
         try:
             if scalar_var:
-                try:
-                    result = query_minmax("Pseudocolor", scalar_var)
-                    print(f"OK: Post-clear MinMax {scalar_var} -> {result}")
-                except Exception as exc:
-                    print(f"WARN: Post-clear scalar query failed -> {exc}")
+                result = query_minmax("Pseudocolor", scalar_var)
+                print(f"OK: Post-clear MinMax {scalar_var} -> {result}")
             if vector_var and check_vectors:
                 expr_name = define_vector_component_expr(
                     vector_var, 0, defined_expressions)
                 if expr_name:
-                    try:
-                        result = query_minmax("Pseudocolor", expr_name)
-                        print(f"OK: Post-clear MinMax {vector_var}[0] -> {result}")
-                    except Exception as exc:
-                        print(f"WARN: Post-clear vector component query failed -> {exc}")
+                    result = query_minmax("Pseudocolor", expr_name)
+                    print(f"OK: Post-clear MinMax {vector_var}[0] -> {result}")
         except Exception as exc:
             print(f"FAIL: Post-clear particle query failed -> {exc}")
             DeleteAllPlots()

@@ -118,11 +118,19 @@ inline bool MeshIsNodeCentered(const MeshPatchHierarchy &hierarchy) {
   return false;
 }
 
+// Logical indices of different refinement levels live in different index
+// spaces, so global IDs are computed per level and offset by the totals of
+// all coarser levels.
 inline std::array<int, 3>
-ComputeGlobalCellDimensions(const MeshPatchHierarchy &hierarchy,
-                            bool meshNodeCentered) {
+ComputeLevelCellDimensions(const MeshPatchHierarchy &hierarchy, int level,
+                           bool meshNodeCentered) {
   std::array<int, 3> dims{1, 1, 1};
-  for (const auto &patch : hierarchy.patches) {
+  if (level < 0 ||
+      level >= static_cast<int>(hierarchy.patchesPerLevel.size())) {
+    return dims;
+  }
+  for (int patchIdx : hierarchy.patchesPerLevel[level]) {
+    const PatchInfo &patch = hierarchy.patches[patchIdx];
     for (int axis = 0; axis < 3; ++axis) {
       if (axis >= hierarchy.topologicalDim) {
         dims[axis] = 1;
@@ -144,10 +152,10 @@ ComputeGlobalCellDimensions(const MeshPatchHierarchy &hierarchy,
 }
 
 inline std::array<int, 3>
-ComputeGlobalNodeDimensions(const MeshPatchHierarchy &hierarchy,
-                            bool meshNodeCentered) {
+ComputeLevelNodeDimensions(const MeshPatchHierarchy &hierarchy, int level,
+                           bool meshNodeCentered) {
   std::array<int, 3> cellDims =
-      ComputeGlobalCellDimensions(hierarchy, meshNodeCentered);
+      ComputeLevelCellDimensions(hierarchy, level, meshNodeCentered);
   std::array<int, 3> nodeDims{1, 1, 1};
   for (int axis = 0; axis < 3; ++axis) {
     if (axis >= hierarchy.topologicalDim) {
@@ -229,7 +237,14 @@ inline PathPattern ParsePattern(const std::string &path) {
     ++idx;
   }
   if (idx > widthStart) {
-    pattern.width = std::stoi(path.substr(widthStart, idx - widthStart));
+    try {
+      pattern.width = std::stoi(path.substr(widthStart, idx - widthStart));
+    } catch (const std::exception &) {
+      // Width does not fit an int; treat the path as having no pattern.
+      pattern.prefix = path;
+      pattern.width = 0;
+      return pattern;
+    }
   }
 
   if (idx >= path.size() || (path[idx] != 'T' && path[idx] != 't')) {
@@ -1112,7 +1127,7 @@ inline bool ParsePlotfileDirectoryName(const std::string &name,
   prefix = name.substr(0, start);
   std::string digits = name.substr(start);
   try {
-    iteration = static_cast<unsigned long long>(std::stoll(digits));
+    iteration = std::stoull(digits);
   } catch (std::exception const &) {
     return false;
   }
@@ -1263,7 +1278,7 @@ avtamrexFileFormat::ResolveDescriptorPaths(const std::string &descriptorPath,
 
     unsigned long long iterValue = 0;
     try {
-      iterValue = static_cast<unsigned long long>(std::stoll(digits));
+      iterValue = std::stoull(digits);
     } catch (std::exception const &) {
       continue;
     }
@@ -1480,8 +1495,8 @@ avtamrexFileFormat::GetVisMF(int timeState, int level) const {
   auto &vismfPtr = plotfileImpl->m_vismf[level];
   if (!vismfPtr) {
     std::string mfName = plotfileImpl->m_mf_name[level];
-    if (!mfName.empty() && mfName[0] != '/') {
-      mfName = plotfilePaths_[timeState] + "/" + mfName;
+    if (!mfName.empty() && !IsAbsolutePath(mfName)) {
+      mfName = JoinPath(plotfilePaths_[timeState], mfName);
     }
     debug1 << "[amrex-plugin] GetVisMF constructing VisMF timeState="
            << timeState << " level=" << level << " mfName='" << mfName
@@ -1857,10 +1872,10 @@ std::string avtamrexFileFormat::GetMultiFabName(int timeState,
   }
 
   std::string mfName = plotfile->m_mf_name[level];
-  if (!mfName.empty() && mfName[0] != '/') {
+  if (!mfName.empty() && !IsAbsolutePath(mfName)) {
     // Plotfile headers store relative MultiFab paths; make them absolute
     // so parallel engines don't depend on the current working directory.
-    mfName = plotfilePaths_[timeState] + "/" + mfName;
+    mfName = JoinPath(plotfilePaths_[timeState], mfName);
   }
   mfNameCache_.emplace(key, mfName);
   return mfName;
@@ -1997,6 +2012,11 @@ void avtamrexFileFormat::BuildFieldHierarchy(avtDatabaseMetaData *md,
   }
 
   const MeshPatchHierarchy &hierarchy = it->second;
+  // PopulateDatabaseMetaData clears meshMap_ on every call, but
+  // PopulateHierarchyCache only runs when the hierarchy cache is empty.
+  // Re-register the field mesh here so the meshMap_ entry exists whenever
+  // metadata is populated, regardless of hierarchy cache state.
+  meshMap_[meshName] = std::tuple(DatasetType::Field, meshName);
 
   if (md != nullptr) {
     avtMeshMetaData *meshMd = new avtMeshMetaData;
@@ -2427,8 +2447,16 @@ void avtamrexFileFormat::PopulateDatabaseMetaData(avtDatabaseMetaData *md,
 
 void avtamrexFileFormat::GetCycles(std::vector<int> &cycles) {
   cycles.resize(iterationIndex_.size());
+  const auto cycleMax =
+      static_cast<unsigned long long>(std::numeric_limits<int>::max());
   for (size_t i = 0; i < iterationIndex_.size(); ++i) {
-    cycles[i] = static_cast<int>(iterationIndex_[i]);
+    if (iterationIndex_[i] > cycleMax) {
+      debug1 << "[amrex-plugin] Cycle " << iterationIndex_[i]
+             << " exceeds INT_MAX; clamping.\n";
+      cycles[i] = std::numeric_limits<int>::max();
+    } else {
+      cycles[i] = static_cast<int>(iterationIndex_[i]);
+    }
   }
 }
 
@@ -2705,12 +2733,20 @@ avtamrexFileFormat::ParseMeshLevel(std::string const &meshName) const {
     std::size_t digitsBegin = pos + suffix.size();
     if (digitsBegin < meshName.size()) {
       std::size_t digitsEnd = digitsBegin;
-      while (digitsEnd < meshName.size() && std::isdigit(meshName[digitsEnd])) {
+      while (digitsEnd < meshName.size() &&
+             std::isdigit(static_cast<unsigned char>(meshName[digitsEnd]))) {
         ++digitsEnd;
       }
       if (digitsEnd > digitsBegin) {
-        level = std::stoi(meshName.substr(digitsBegin, digitsEnd - digitsBegin));
-        base = meshName.substr(0, pos);
+        try {
+          level =
+              std::stoi(meshName.substr(digitsBegin, digitsEnd - digitsBegin));
+          base = meshName.substr(0, pos);
+        } catch (const std::exception &) {
+          // Level does not fit an int; keep the unparsed mesh name.
+          level = 0;
+          base = meshName;
+        }
       }
     }
   }
@@ -2891,6 +2927,12 @@ avtamrexFileFormat::BuildDomainBoundaryList(
     if (static_cast<int>(otherIdx) == domain) {
       continue;
     }
+    // Logical extents of different refinement levels live in different index
+    // spaces, so adjacency is only meaningful between same-level patches.
+    if (hierarchy.levelIdsPerPatch[otherIdx] !=
+        hierarchy.levelIdsPerPatch[domain]) {
+      continue;
+    }
 
     const PatchInfo &other = hierarchy.patches[otherIdx];
 
@@ -3030,9 +3072,16 @@ avtamrexFileFormat::BuildGlobalZoneIds(const MeshPatchHierarchy &hierarchy,
   }
 
   bool meshNodeCentered = MeshIsNodeCentered(hierarchy);
-  std::array<int, 3> globalDims =
-      ComputeGlobalCellDimensions(hierarchy, meshNodeCentered);
   const PatchInfo &patch = hierarchy.patches[domain];
+  const int patchLevel = hierarchy.levelIdsPerPatch[domain];
+  std::array<int, 3> globalDims =
+      ComputeLevelCellDimensions(hierarchy, patchLevel, meshNodeCentered);
+  vtkIdType levelBase = 0;
+  for (int level = 0; level < patchLevel; ++level) {
+    std::array<int, 3> dims =
+        ComputeLevelCellDimensions(hierarchy, level, meshNodeCentered);
+    levelBase += static_cast<vtkIdType>(dims[0]) * dims[1] * dims[2];
+  }
   std::array<int, 3> counts =
       ComputePatchCellCounts(patch, hierarchy.topologicalDim, meshNodeCentered);
   debug5 << "[amrex-plugin] GlobalZoneIds domain=" << domain
@@ -3065,7 +3114,7 @@ avtamrexFileFormat::BuildGlobalZoneIds(const MeshPatchHierarchy &hierarchy,
         vtkIdType globalId = static_cast<vtkIdType>(gi) +
                              strideY * static_cast<vtkIdType>(gj) +
                              strideZ * static_cast<vtkIdType>(gk);
-        values[idx++] = globalId;
+        values[idx++] = levelBase + globalId;
       }
     }
   }
@@ -3082,9 +3131,16 @@ avtamrexFileFormat::BuildGlobalNodeIds(const MeshPatchHierarchy &hierarchy,
   }
 
   bool meshNodeCentered = MeshIsNodeCentered(hierarchy);
-  std::array<int, 3> globalDims =
-      ComputeGlobalNodeDimensions(hierarchy, meshNodeCentered);
   const PatchInfo &patch = hierarchy.patches[domain];
+  const int patchLevel = hierarchy.levelIdsPerPatch[domain];
+  std::array<int, 3> globalDims =
+      ComputeLevelNodeDimensions(hierarchy, patchLevel, meshNodeCentered);
+  vtkIdType levelBase = 0;
+  for (int level = 0; level < patchLevel; ++level) {
+    std::array<int, 3> dims =
+        ComputeLevelNodeDimensions(hierarchy, level, meshNodeCentered);
+    levelBase += static_cast<vtkIdType>(dims[0]) * dims[1] * dims[2];
+  }
   std::array<int, 3> counts =
       ComputePatchNodeCounts(patch, hierarchy.topologicalDim, meshNodeCentered);
   debug5 << "[amrex-plugin] GlobalNodeIds domain=" << domain
@@ -3117,7 +3173,7 @@ avtamrexFileFormat::BuildGlobalNodeIds(const MeshPatchHierarchy &hierarchy,
         vtkIdType globalId = static_cast<vtkIdType>(gi) +
                              strideY * static_cast<vtkIdType>(gj) +
                              strideZ * static_cast<vtkIdType>(gk);
-        values[idx++] = globalId;
+        values[idx++] = levelBase + globalId;
       }
     }
   }
@@ -3318,15 +3374,24 @@ vtkDataArray *avtamrexFileFormat::LoadScalarPatchData(
   if (nx == fabNx && ny == fabNy && nz == fabNz) {
     std::copy(src, src + static_cast<vtkIdType>(tupleCount), buffer);
   } else {
+    // The FAB box can be larger than the patch's valid box (e.g. MultiFabs
+    // written with ghost cells), so shift each index by the FAB-relative
+    // start of the valid region.
+    const int startX =
+        static_cast<int>(patch.offset.size() > 0 ? patch.offset[0] : loX) - loX;
+    const int startY =
+        static_cast<int>(patch.offset.size() > 1 ? patch.offset[1] : loY) - loY;
+    const int startZ =
+        static_cast<int>(patch.offset.size() > 2 ? patch.offset[2] : loZ) - loZ;
     vtkIdType idx = 0;
     for (int k = 0; k < nz; ++k) {
-      int kk = loZ + (patch.spatialDim >= 3 ? k : 0);
-      const int kOffset = kk - loZ;
+      const int kOffset = startZ + (patch.spatialDim >= 3 ? k : 0);
       for (int j = 0; j < ny; ++j) {
-        int jj = loY + (patch.spatialDim >= 2 ? j : 0);
-        const int jOffset = jj - loY;
+        const int jOffset = startY + (patch.spatialDim >= 2 ? j : 0);
         const amrex::Real *row =
-            src + (kOffset * fabNy + jOffset) * fabNx;
+            src +
+            (static_cast<std::ptrdiff_t>(kOffset) * fabNy + jOffset) * fabNx +
+            startX;
         std::copy(row, row + nx, buffer + idx);
         idx += nx;
       }
@@ -3484,6 +3549,14 @@ vtkDataSet *avtamrexFileFormat::GetMesh(int timeState, int domain,
   EnsureHierarchyInitialized(timeState);
 
   auto meshTypeIt = meshMap_.find(visit_meshname);
+  if (meshTypeIt == meshMap_.end() &&
+      std::string(visit_meshname).rfind("particles/", 0) == 0) {
+    // Particle meshes are registered lazily by BuildParticleHierarchy, so a
+    // direct particle mesh request can arrive before the map is built.
+    // Initialize the particle hierarchy for this timestep and retry.
+    EnsureParticleHierarchyInitialized(timeState);
+    meshTypeIt = meshMap_.find(visit_meshname);
+  }
   if (meshTypeIt == meshMap_.end()) {
     debug1 << "[amrex-plugin] GetMesh missing mesh '" << meshName << "'\n";
     EXCEPTION1(InvalidVariableException, visit_meshname);

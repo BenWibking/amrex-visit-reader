@@ -70,19 +70,27 @@ def main():
     AddOperator("InverseGhostZone")
     DrawPlots()
 
-    remaining_zones = query_value("NumZones")
+    try:
+        remaining_zones = query_value("NumZones")
+    except Exception as exc:
+        print(f"FAIL: NumZones query failed -> {exc}")
+        DeleteAllPlots()
+        return 1
     print(f"Valid zones remaining after Inverse Ghost Zone: {remaining_zones}")
 
     if remaining_zones > 0:
         print("PASS: Valid zones remain, indicating ghosts were created.")
+        exit_code = 0
     else:
         print(
             "FAIL: No valid zones remain after Inverse Ghost Zone; "
             "ghost generation likely missing."
         )
+        exit_code = 1
 
     DeleteAllPlots()
+    return exit_code
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
