@@ -453,7 +453,7 @@ inline const char *CenteringToString(avtCentering cent) {
 inline void LogPatchSummary(const PatchInfo &patch,
                             const std::string &context) {
   debug3 << "[amrex-plugin] " << context
-         << " mesh=" << patch.meshName << " level=" << patch.level
+         << " level=" << patch.level
          << " centering=" << CenteringToString(patch.centering)
          << " offset=" << JoinContainer(patch.offset)
          << " extent=" << JoinContainer(patch.extent)
@@ -1951,10 +1951,11 @@ void avtamrexFileFormat::PopulateHierarchyCache(int timeState) {
   hierarchyMap.clear();
 
   std::string meshName = MakeDefaultMeshName(plotfilePaths_[timeState]);
-  MeshPatchHierarchy hierarchy =
+  MeshPatchHierarchy built =
       BuildHierarchyFromPlotfile(meshName, *GetPlotFile(timeState));
-  hierarchy.metadataInitialized = true;
-  hierarchyMap[meshName] = hierarchy;
+  built.metadataInitialized = true;
+  MeshPatchHierarchy &hierarchy = hierarchyMap[meshName];
+  hierarchy = std::move(built);
 
   // Building and caching the global structured-boundary object costs
   // O(#domains x #neighbors) memory on every rank, so skip it in the
@@ -2026,7 +2027,9 @@ void avtamrexFileFormat::BuildFieldHierarchy(avtDatabaseMetaData *md,
     meshMd->numGroups = hierarchy.numLevels;
     meshMd->groupTitle = "levels";
     meshMd->groupPieceName = "level";
-    meshMd->blockNames = hierarchy.blockNames;
+    // Explicit blockNames would put one std::string per domain into the
+    // metadata, the SIL, and every serialized copy of both; VisIt generates
+    // "patch N" style names from blockPieceName when the list is empty.
     meshMd->loadBalanceScheme = LOAD_BALANCE_STRIDE_ACROSS_BLOCKS;
     if (buildDomainBoundaries_ || hierarchy.numLevels > 1) {
       meshMd->containsGhostZones = AVT_HAS_GHOSTS;
@@ -2086,6 +2089,7 @@ void avtamrexFileFormat::BuildParticleHierarchy(avtDatabaseMetaData *md,
       [&](const std::string &meshName, int spatialDim,
           const std::vector<int> &numGrids) -> MeshPatchHierarchy {
         MeshPatchHierarchy hierarchy;
+        hierarchy.meshName = meshName;
         hierarchy.numLevels = static_cast<int>(numGrids.size());
         hierarchy.topologicalDim = 0;
         hierarchy.spatialDim = spatialDim;
@@ -2105,27 +2109,16 @@ void avtamrexFileFormat::BuildParticleHierarchy(avtDatabaseMetaData *md,
               static_cast<size_t>(std::max(0, grids)));
           for (int grid = 0; grid < grids; ++grid) {
             PatchInfo patch;
-            patch.meshName = meshName;
             patch.level = level;
             patch.fabIndex = grid;
             patch.centering = AVT_NODECENT;
             patch.spatialDim = spatialDim;
-            patch.offset.assign(3, 0);
-            patch.extent.assign(3, 0);
-            patch.storageOffset.assign(3, 0);
-            patch.storageExtent.assign(3, 0);
-            patch.storageOffsetCanonical.assign(3, 0);
-            patch.storageExtentCanonical.assign(3, 0);
 
             hierarchy.patches.push_back(patch);
             int patchIndex = static_cast<int>(hierarchy.patches.size()) - 1;
             hierarchy.levelIdsPerPatch.push_back(level);
             hierarchy.groupIds.push_back(level);
             hierarchy.patchesPerLevel[level].push_back(patchIndex);
-
-            std::ostringstream blockName;
-            blockName << "level" << level << ",grid" << grid;
-            hierarchy.blockNames.push_back(blockName.str());
           }
         }
 
@@ -2198,9 +2191,9 @@ void avtamrexFileFormat::BuildParticleHierarchy(avtDatabaseMetaData *md,
     speciesCache.emplace(entry, info);
     meshMap_[info.meshName] = std::tuple(DatasetType::Particle, entry);
 
-    MeshPatchHierarchy particleHierarchy =
+    MeshPatchHierarchy &particleHierarchy = hierarchyMap[info.meshName];
+    particleHierarchy =
         buildParticleHierarchy(info.meshName, info.spatialDim, numGrids);
-    hierarchyMap[info.meshName] = particleHierarchy;
 
     if (md != nullptr) {
       avtMeshMetaData *meshMd = new avtMeshMetaData;
@@ -2214,7 +2207,6 @@ void avtamrexFileFormat::BuildParticleHierarchy(avtDatabaseMetaData *md,
       meshMd->numGroups = particleHierarchy.numLevels;
       meshMd->groupTitle = "levels";
       meshMd->groupPieceName = "level";
-      meshMd->blockNames = particleHierarchy.blockNames;
       meshMd->loadBalanceScheme = LOAD_BALANCE_STRIDE_ACROSS_BLOCKS;
       meshMd->containsGhostZones = AVT_NO_GHOSTS;
       md->Add(meshMd);
@@ -2339,6 +2331,7 @@ void avtamrexFileFormat::RegisterFieldVariables(
 MeshPatchHierarchy avtamrexFileFormat::BuildHierarchyFromPlotfile(
     const std::string &visitMeshName, amrex::PlotFileData &plotfile) {
   MeshPatchHierarchy hierarchy;
+  hierarchy.meshName = visitMeshName;
   hierarchy.numLevels = plotfile.finestLevel() + 1;
   hierarchy.topologicalDim = plotfile.spaceDim();
   hierarchy.spatialDim = plotfile.spaceDim();
@@ -2359,7 +2352,6 @@ MeshPatchHierarchy avtamrexFileFormat::BuildHierarchyFromPlotfile(
     for (int idx = 0; idx < boxes.size(); ++idx) {
       const amrex::Box &box = boxes[idx];
       PatchInfo patch;
-      patch.meshName = visitMeshName;
       patch.level = level;
       patch.fabIndex = idx;
       patch.cellBox = box;
@@ -2383,10 +2375,6 @@ MeshPatchHierarchy avtamrexFileFormat::BuildHierarchyFromPlotfile(
       hierarchy.levelIdsPerPatch.push_back(level);
       hierarchy.groupIds.push_back(level);
       hierarchy.patchesPerLevel[level].push_back(patchIndex);
-
-      std::ostringstream blockName;
-      blockName << "level" << level << ",patch" << idx;
-      hierarchy.blockNames.push_back(blockName.str());
     }
   }
 
@@ -2894,7 +2882,7 @@ avtamrexFileFormat::CreateRectilinearPatch(const PatchInfo &patch) const {
   grid->SetXCoordinates(coords[0]);
   grid->SetYCoordinates(coords[1]);
   grid->SetZCoordinates(coords[2]);
-  debug5 << "[amrex-plugin] CreateRectilinearPatch mesh=" << patch.meshName
+  debug5 << "[amrex-plugin] CreateRectilinearPatch"
          << " level=" << patch.level << " logicalLower=[" << patch.logicalLower[0]
          << "," << patch.logicalLower[1] << "," << patch.logicalLower[2]
          << "] logicalUpper=[" << patch.logicalUpper[0] << ","
@@ -3401,8 +3389,8 @@ void avtamrexFileFormat::AddGhostZonesForPatch(
 
 vtkDataArray *avtamrexFileFormat::LoadScalarPatchData(
     int timeState, const PatchInfo &patch, const std::string &component) const {
-  debug1 << "[amrex-plugin] LoadScalarPatchData mesh='" << patch.meshName
-         << "' component='" << component << "' offset="
+  debug1 << "[amrex-plugin] LoadScalarPatchData component='" << component
+         << "' offset="
          << JoinContainer(patch.offset) << " extent="
          << JoinContainer(patch.extent) << "\n";
 
@@ -3514,8 +3502,8 @@ vtkDataArray *avtamrexFileFormat::LoadScalarPatchData(
 vtkDataArray *avtamrexFileFormat::LoadVectorPatchData(
     int timeState, const PatchInfo &patch,
     const std::vector<std::string> &components) const {
-  debug1 << "[amrex-plugin] LoadVectorPatchData mesh='" << patch.meshName
-         << "' components=" << JoinStrings(components) << "' offset="
+  debug1 << "[amrex-plugin] LoadVectorPatchData components='"
+         << JoinStrings(components) << "' offset="
          << JoinContainer(patch.offset) << " extent="
          << JoinContainer(patch.extent) << "\n";
 
@@ -3550,12 +3538,12 @@ vtkDataArray *avtamrexFileFormat::LoadVectorPatchData(
         debug1 << "[amrex-plugin] LoadVectorPatchData component has"
                << " unexpected component count="
                << component->GetNumberOfComponents() << "\n";
-        EXCEPTION1(InvalidVariableException, patch.meshName.c_str());
+        EXCEPTION1(InvalidVariableException, components.front().c_str());
       }
       if (component->GetNumberOfTuples() != tupleCount) {
         debug1 << "[amrex-plugin] LoadVectorPatchData tuple count"
                << " mismatch for a component\n";
-        EXCEPTION1(InvalidVariableException, patch.meshName.c_str());
+        EXCEPTION1(InvalidVariableException, components.front().c_str());
       }
       if (vtkDoubleArray::SafeDownCast(component) != nullptr) {
         hasDoubleComponent = true;
@@ -3564,7 +3552,7 @@ vtkDataArray *avtamrexFileFormat::LoadVectorPatchData(
       } else {
         debug1 << "[amrex-plugin] LoadVectorPatchData unsupported"
                << " vtkDataArray subtype for component\n";
-        EXCEPTION1(InvalidVariableException, patch.meshName.c_str());
+        EXCEPTION1(InvalidVariableException, components.front().c_str());
       }
     }
 
@@ -3603,7 +3591,7 @@ vtkDataArray *avtamrexFileFormat::LoadVectorPatchData(
         if (floatComp == nullptr) {
         debug1 << "[amrex-plugin] LoadVectorPatchData expected"
                << " float component but found different type\n";
-        EXCEPTION1(InvalidVariableException, patch.meshName.c_str());
+        EXCEPTION1(InvalidVariableException, components.front().c_str());
       }
         const float *src = floatComp->GetPointer(0);
         for (vtkIdType tuple = 0; tuple < tupleCount; ++tuple) {
@@ -3617,7 +3605,7 @@ vtkDataArray *avtamrexFileFormat::LoadVectorPatchData(
     if (result == nullptr) {
       debug1 << "[amrex-plugin] LoadVectorPatchData could not determine"
              << " a suitable output array type\n";
-      EXCEPTION1(InvalidVariableException, patch.meshName.c_str());
+      EXCEPTION1(InvalidVariableException, components.front().c_str());
     }
 
     for (vtkDataArray *component : loadedComponents) {
@@ -3691,7 +3679,7 @@ vtkDataSet *avtamrexFileFormat::GetMesh(int timeState, int domain,
 
     const PatchInfo &patch = hierarchy.patches.at(domain);
     debug5 << "[amrex-plugin] GetMesh domain=" << domain
-           << " level=" << patch.level << " using mesh " << patch.meshName
+           << " level=" << patch.level << " using mesh " << visit_meshname
            << "\n";
 
     std::ostringstream ctx;

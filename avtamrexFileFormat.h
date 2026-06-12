@@ -39,18 +39,13 @@ class PlotFileDataImpl;
 class VisMF;
 }
 
+// At hero scale this struct is replicated once per domain on every rank,
+// so keep it free of heap-allocated members.
 struct PatchInfo {
   int level{0};
-  std::vector<long long> offset;
-  std::vector<uint64_t> extent;
+  std::array<long long, 3> offset{{0, 0, 0}};
+  std::array<uint64_t, 3> extent{{0, 0, 0}};
   amrex::Box cellBox;
-  std::vector<long long> storageOffset;
-  std::vector<uint64_t> storageExtent;
-  std::vector<uint64_t> storageOffsetCanonical;
-  std::vector<uint64_t> storageExtentCanonical;
-  std::vector<std::string> storageAxisLabels;
-  std::array<int, 3> storageToVtk{{0, 1, 2}};
-  std::string meshName;
   double origin[3]{0.0, 0.0, 0.0};
   double spacing[3]{0.0, 0.0, 0.0};
   avtCentering centering{AVT_UNKNOWN_CENT};
@@ -61,12 +56,12 @@ struct PatchInfo {
 };
 
 struct MeshPatchHierarchy {
+  std::string meshName;
   std::vector<PatchInfo> patches;
   int numLevels{0};
   std::vector<std::array<int, 3>> levelRefinementRatios;
   std::vector<int> levelIdsPerPatch;
   std::vector<int> groupIds;
-  std::vector<std::string> blockNames;
   std::vector<int> levelValues;
   std::vector<std::vector<int>> patchesPerLevel;
   std::vector<std::array<double, 3>> levelCellSizes;
