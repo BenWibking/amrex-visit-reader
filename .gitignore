@@ -7,4 +7,5 @@ compile_commands.json
 *.bp
 *.session
 *.gui
+*.vlog
 visitlog.py

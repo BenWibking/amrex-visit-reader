@@ -64,15 +64,18 @@
 
 #include <cpptrace/cpptrace.hpp>
 
+#include <DBOptionsAttributes.h>
 #include <DebugStream.h>
 #include <Expression.h>
 #include <InvalidVariableException.h>
 #include <InvalidFilesException.h>
+#include <avtDatabase.h>
 #include <avtGhostData.h>
 #include <avtVariableCache.h>
 #include <void_ref_ptr.h>
 
 #include "avtamrexFileFormat.h"
+#include "avtamrexOptions.h"
 
 namespace {
 
@@ -1321,12 +1324,25 @@ std::string avtamrexFileFormat::MakeDefaultMeshName(
 //
 // ****************************************************************************
 
-avtamrexFileFormat::avtamrexFileFormat(const char *filename)
+avtamrexFileFormat::avtamrexFileFormat(const char *filename,
+                                       const DBOptionsAttributes *readOpts)
     : avtMTMDFileFormat(filename) {
   InstallSegfaultTraceHandler();
   AmrexRuntime::Retain();
   debug1 << "[amrex-plugin] Constructing reader for plotfile '" << filename
          << "'\n";
+
+  if (readOpts != nullptr) {
+    if (readOpts->FindIndex(AMREX_OPT_DOMAIN_BOUNDARIES) >= 0) {
+      buildDomainBoundaries_ = readOpts->GetBool(AMREX_OPT_DOMAIN_BOUNDARIES);
+    }
+    if (readOpts->FindIndex(AMREX_OPT_INVARIANT_MESH) >= 0) {
+      invariantMesh_ = readOpts->GetBool(AMREX_OPT_INVARIANT_MESH);
+    }
+  }
+  debug1 << "[amrex-plugin] Read options: domainBoundaries="
+         << (buildDomainBoundaries_ ? "on" : "off")
+         << " invariantMesh=" << (invariantMesh_ ? "on" : "off") << "\n";
 
   std::string requestedPath = TrimTrailingSeparators(filename);
   if (requestedPath.empty()) {
@@ -1939,8 +1955,14 @@ void avtamrexFileFormat::PopulateHierarchyCache(int timeState) {
   hierarchy.metadataInitialized = true;
   hierarchyMap[meshName] = hierarchy;
 
-#if !defined(AMREX_DISABLE_STRUCTURED_BOUNDARY_CACHE)
-  if (cache != nullptr) {
+  // Building and caching the global structured-boundary object costs
+  // O(#domains x #neighbors) memory on every rank, so skip it in the
+  // metadata server and honor the read option that disables it for very
+  // large domain counts. VisIt only consumes this object from the cache;
+  // without it, ghost synthesis from domain boundaries is unavailable but
+  // plotting still works (nesting ghosts are attached per patch in GetMesh).
+  if (buildDomainBoundaries_ && !avtDatabase::OnlyServeUpMetaData() &&
+      cache != nullptr) {
     avtStructuredDomainBoundaries *structured =
         BuildStructuredDomainBoundaries(hierarchy);
     if (structured != nullptr) {
@@ -1954,12 +1976,10 @@ void avtamrexFileFormat::PopulateHierarchyCache(int timeState) {
       debug1 << "[amrex-plugin] Cached structured boundaries for mesh '"
              << meshName << "' timeState=" << timeState << "\n";
     }
+  } else {
+    debug2 << "[amrex-plugin] Skipping structured boundary cache for mesh '"
+           << meshName << "' (mdserver or disabled by read option)\n";
   }
-#else
-  debug2 << "[amrex-plugin] Skipping structured boundary cache for mesh '"
-         << meshName << "' due to AMREX_DISABLE_STRUCTURED_BOUNDARY_CACHE"
-         << "\n";
-#endif
 
   meshMap_[meshName] = std::tuple(DatasetType::Field, meshName);
   debug2 << "[amrex-plugin] Registered AMR mesh '" << meshName
@@ -2007,8 +2027,15 @@ void avtamrexFileFormat::BuildFieldHierarchy(avtDatabaseMetaData *md,
     meshMd->groupPieceName = "level";
     meshMd->blockNames = hierarchy.blockNames;
     meshMd->loadBalanceScheme = LOAD_BALANCE_STRIDE_ACROSS_BLOCKS;
-    meshMd->containsGhostZones = AVT_HAS_GHOSTS;
-    meshMd->presentGhostZoneTypes = (1 << AVT_NESTING_GHOST_ZONES);
+    if (buildDomainBoundaries_ || hierarchy.numLevels > 1) {
+      meshMd->containsGhostZones = AVT_HAS_GHOSTS;
+      meshMd->presentGhostZoneTypes = (1 << AVT_NESTING_GHOST_ZONES);
+    } else {
+      // With ghost synthesis disabled and a single level there are no
+      // nesting ghosts either, so don't promise ghost data that will
+      // never be attached.
+      meshMd->containsGhostZones = AVT_NO_GHOSTS;
+    }
     md->Add(meshMd);
     intVector blockIds = hierarchy.groupIds;
     md->AddGroupInformation(hierarchy.numLevels,
@@ -2603,21 +2630,21 @@ void *avtamrexFileFormat::GetAuxiliaryData(const char *var, int timestep,
 
   if (type != nullptr &&
       strcmp(type, AUXILIARY_DATA_DOMAIN_BOUNDARY_INFORMATION) == 0) {
-    std::string meshNameResolved;
-    const MeshPatchHierarchy *hier = nullptr;
-    if (!resolveMesh(meshNameResolved, hier)) {
-      return NULL;
-    }
-    return avtMTMDFileFormat::GetAuxiliaryData(meshNameResolved.c_str(),
-                                               timestep, domain, type, args,
-                                               df);
+    // Per-domain boundary requests only arrive when the cached global
+    // boundary object is absent (boundary building disabled by read option).
+    // VisIt would assemble the per-domain lists into an
+    // avtCurvilinearDomainBoundaries object (hard-coded in
+    // avtLocalStructuredDomainBoundaryList::GlobalGenerate), which rejects
+    // the rectilinear grids this plugin produces, so serving local lists
+    // here would only generate engine errors. Return nothing instead;
+    // plotting proceeds without boundary-synthesized ghosts.
+    debug2 << "[amrex-plugin] Declining per-domain boundary request"
+           << " (domain=" << domain << "); structured boundary cache is"
+           << " disabled\n";
+    return NULL;
   }
 
   if (type != nullptr) {
-    if (strcmp(type, AUXILIARY_DATA_DOMAIN_BOUNDARY_INFORMATION) == 0) {
-      debug2 << "[amrex-plugin] Delegating domain boundary request to base cache" << "\n";
-      return avtMTMDFileFormat::GetAuxiliaryData(var, timestep, domain, type, args, df);
-    }
     const MeshPatchHierarchy *hierarchyPtr = nullptr;
     std::string meshName;
     auto requireHierarchy = [&]() -> bool {
@@ -2647,6 +2674,14 @@ void *avtamrexFileFormat::GetAuxiliaryData(const char *var, int timestep,
 
     if (strcmp(type, AUXILIARY_DATA_GLOBAL_NODE_IDS) == 0 ||
         strcmp(type, "GLOBAL_NODE_IDS") == 0) {
+      if (!buildDomainBoundaries_) {
+        // Global ids are part of the same ghost-synthesis package as the
+        // structured boundaries; serving them without boundaries sends
+        // VisIt down a ghost-node path that breaks queries.
+        debug2 << "[amrex-plugin] Declining global node id request; ghost"
+               << " synthesis is disabled\n";
+        return NULL;
+      }
       if (!requireHierarchy()) {
         return NULL;
       }
@@ -2671,6 +2706,11 @@ void *avtamrexFileFormat::GetAuxiliaryData(const char *var, int timestep,
 
     if (strcmp(type, AUXILIARY_DATA_GLOBAL_ZONE_IDS) == 0 ||
         strcmp(type, "GLOBAL_ZONE_IDS") == 0) {
+      if (!buildDomainBoundaries_) {
+        debug2 << "[amrex-plugin] Declining global zone id request; ghost"
+               << " synthesis is disabled\n";
+        return NULL;
+      }
       if (!requireHierarchy()) {
         return NULL;
       }

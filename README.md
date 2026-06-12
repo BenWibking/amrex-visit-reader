@@ -146,8 +146,6 @@ Useful CMake options:
 
 * `-DAMREX_GIT_TAG=<tag>` chooses the AMReX version fetched by CMake. The
   default is `24.05`.
-* `-DAMREX_DISABLE_STRUCTURED_BOUNDARY_CACHE=ON` skips cached structured-domain
-  boundary metadata and disables VisIt's ghost-synthesis metadata path.
 
 ## Testing
 

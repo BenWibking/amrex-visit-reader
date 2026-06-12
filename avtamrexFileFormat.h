@@ -28,6 +28,7 @@
 #include <avtStructuredDomainNesting.h>
 #include <avtTypes.h>
 
+class DBOptionsAttributes;
 class vtkDataArray;
 class vtkDataSet;
 class vtkRectilinearGrid;
@@ -76,7 +77,7 @@ struct MeshPatchHierarchy {
 
 class avtamrexFileFormat : public avtMTMDFileFormat {
 public:
-  avtamrexFileFormat(const char *);
+  avtamrexFileFormat(const char *, const DBOptionsAttributes *);
   ~avtamrexFileFormat() override;
 
   int GetNTimesteps(void) override;
@@ -88,8 +89,8 @@ public:
   vtkDataArray *GetVar(int, int, const char *) override;
   vtkDataArray *GetVectorVar(int, int, const char *) override;
 
-  bool HasInvariantMetaData(void) const override { return false; }
-  bool HasInvariantSIL(void) const override { return false; }
+  bool HasInvariantMetaData(void) const override { return invariantMesh_; }
+  bool HasInvariantSIL(void) const override { return invariantMesh_; }
 
   void GetCycles(std::vector<int> &) override;
   void GetTimes(std::vector<double> &) override;
@@ -172,6 +173,10 @@ protected:
     bool isPosition{false};
   };
 
+
+  // Read options (see avtamrexOptions.h).
+  bool buildDomainBoundaries_{true};
+  bool invariantMesh_{false};
 
   std::vector<std::string> plotfilePaths_;
   std::vector<unsigned long long> iterationIndex_;
