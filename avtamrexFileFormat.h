@@ -157,25 +157,6 @@ protected:
     }
   };
 
-  struct VisMFClearEntry {
-    VisMFCacheKey key;
-    int fabIndex{0};
-    int compIndex{0};
-
-    bool operator<(const VisMFClearEntry &other) const {
-      if (key < other.key) {
-        return true;
-      }
-      if (other.key < key) {
-        return false;
-      }
-      if (fabIndex != other.fabIndex) {
-        return fabIndex < other.fabIndex;
-      }
-      return compIndex < other.compIndex;
-    }
-  };
-
   struct ParticleVarInfo {
     std::string meshName;
     std::string speciesName;
@@ -200,7 +181,6 @@ protected:
       plotfileImplCache_;
   mutable std::map<std::pair<int, int>, std::string> mfNameCache_;
   mutable std::map<VisMFCacheKey, std::shared_ptr<amrex::VisMF>> vismfCache_;
-  mutable std::vector<VisMFClearEntry> vismfClearList_;
   std::unordered_map<std::string, std::tuple<std::string, std::string>> varMap_;
   std::unordered_map<std::string,
                      std::tuple<std::string, std::vector<std::string>>>
@@ -253,8 +233,6 @@ protected:
   std::shared_ptr<amrex::PlotFileData> GetPlotFile(int timeState) const;
   std::shared_ptr<amrex::PlotFileDataImpl> GetPlotFileImpl(int timeState) const;
   std::shared_ptr<amrex::VisMF> GetVisMF(int timeState, int level) const;
-  void QueueVisMFClear(const VisMFCacheKey &key, int fabIndex,
-                       int compIndex) const;
   std::string GetMultiFabName(int timeState, int level) const;
   std::vector<std::pair<unsigned long long, std::string>>
   ResolveDescriptorPaths(const std::string &descriptorPath,

@@ -1834,11 +1834,6 @@ vtkDataArray *avtamrexFileFormat::GetParticleVectorVar(
   return array;
 }
 
-void avtamrexFileFormat::QueueVisMFClear(const VisMFCacheKey &key, int fabIndex,
-                                         int compIndex) const {
-  vismfClearList_.push_back({key, fabIndex, compIndex});
-}
-
 std::string avtamrexFileFormat::GetMultiFabName(int timeState,
                                                 int level) const {
   const auto key = std::make_pair(timeState, level);
@@ -1931,26 +1926,6 @@ void avtamrexFileFormat::FreeUpResources(void) {
   std::fill(particleHierarchyInitialized_.begin(),
             particleHierarchyInitialized_.end(), false);
 
-  if (!vismfClearList_.empty()) {
-    std::sort(vismfClearList_.begin(), vismfClearList_.end());
-    auto last = std::unique(vismfClearList_.begin(), vismfClearList_.end(),
-                            [](const VisMFClearEntry &lhs,
-                               const VisMFClearEntry &rhs) {
-                              return lhs.key.timeState == rhs.key.timeState &&
-                                     lhs.key.level == rhs.key.level &&
-                                     lhs.fabIndex == rhs.fabIndex &&
-                                     lhs.compIndex == rhs.compIndex;
-                            });
-    vismfClearList_.erase(last, vismfClearList_.end());
-
-    for (const auto &entry : vismfClearList_) {
-      auto it = vismfCache_.find(entry.key);
-      if (it != vismfCache_.end() && it->second != nullptr) {
-        it->second->clear(entry.fabIndex, entry.compIndex);
-      }
-    }
-    vismfClearList_.clear();
-  }
   vismfCache_.clear();
 }
 
@@ -3335,7 +3310,6 @@ vtkDataArray *avtamrexFileFormat::LoadScalarPatchData(
   }
 
   const amrex::FArrayBox &fab = vismf->GetFab(patch.fabIndex, compIndex);
-  QueueVisMFClear({timeState, patch.level}, patch.fabIndex, compIndex);
   int fabComp = compIndex;
   if (fab.nComp() == 1 && compIndex != 0) {
     // VisMF::GetFab(fab, comp) returns a single-component FArrayBox.
@@ -3399,6 +3373,10 @@ vtkDataArray *avtamrexFileFormat::LoadScalarPatchData(
       }
     }
   }
+
+  // Release the FAB copy held inside VisMF right away; keeping it for the
+  // whole timestep would hold a duplicate of every field read on this rank.
+  vismf->clear(patch.fabIndex, compIndex);
 
   return array;
 }
