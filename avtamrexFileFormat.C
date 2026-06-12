@@ -71,6 +71,7 @@
 #include <InvalidFilesException.h>
 #include <avtDatabase.h>
 #include <avtGhostData.h>
+#include <avtIntervalTree.h>
 #include <avtVariableCache.h>
 #include <void_ref_ptr.h>
 
@@ -2653,6 +2654,95 @@ void *avtamrexFileFormat::GetAuxiliaryData(const char *var, int timestep,
       }
       return resolveMesh(meshName, hierarchyPtr);
     };
+
+    if (strcmp(type, AUXILIARY_DATA_SPATIAL_EXTENTS) == 0) {
+      // Per-domain bounding boxes let the Box/Slice/Clip operators restrict
+      // the domain list before any I/O happens, so memory scales with the
+      // selected subvolume instead of the whole dataset.
+      if (!requireHierarchy()) {
+        return NULL;
+      }
+      const MeshPatchHierarchy &hierarchy = *hierarchyPtr;
+      const int dims = std::max(1, hierarchy.spatialDim);
+      auto *spatialTree = new avtIntervalTree(
+          static_cast<int>(hierarchy.patches.size()), dims);
+      std::vector<double> bounds(static_cast<size_t>(2 * dims));
+      for (size_t patchIdx = 0; patchIdx < hierarchy.patches.size();
+           ++patchIdx) {
+        const PatchInfo &patch = hierarchy.patches[patchIdx];
+        for (int axis = 0; axis < dims; ++axis) {
+          const uint64_t cells =
+              axis < static_cast<int>(patch.extent.size())
+                  ? std::max<uint64_t>(patch.extent[axis], 1)
+                  : 1;
+          const double lo = patch.origin[axis];
+          bounds[2 * axis] = lo;
+          bounds[2 * axis + 1] =
+              lo + static_cast<double>(cells) * patch.spacing[axis];
+        }
+        spatialTree->AddElement(static_cast<int>(patchIdx), bounds.data());
+      }
+      spatialTree->Calculate(true);
+      df = avtIntervalTree::Destruct;
+      debug1 << "[amrex-plugin] Spatial extents ready for mesh '" << meshName
+             << "' patches=" << hierarchy.patches.size() << "\n";
+      return spatialTree;
+    }
+
+    if (strcmp(type, AUXILIARY_DATA_DATA_EXTENTS) == 0) {
+      // Per-domain variable ranges come straight from the VisMF headers, so
+      // Contour/Threshold pipelines can skip domains without reading data.
+      if (var == nullptr) {
+        return NULL;
+      }
+      auto varIt = varMap_.find(var);
+      if (varIt == varMap_.end()) {
+        debug2 << "[amrex-plugin] Data extents request for non-scalar var '"
+               << var << "'; nothing to serve\n";
+        return NULL;
+      }
+      if (!requireHierarchy()) {
+        return NULL;
+      }
+      const MeshPatchHierarchy &hierarchy = *hierarchyPtr;
+      const std::string &component = std::get<1>(varIt->second);
+      auto plotfile = GetPlotFile(timestep);
+      const auto &varNames = plotfile->varNames();
+      auto compIt = std::find(varNames.begin(), varNames.end(), component);
+      if (compIt == varNames.end()) {
+        debug1 << "[amrex-plugin] Data extents missing component '"
+               << component << "'\n";
+        return NULL;
+      }
+      const int compIndex = static_cast<int>(compIt - varNames.begin());
+
+      auto *dataTree = new avtIntervalTree(
+          static_cast<int>(hierarchy.patches.size()), 1);
+      for (size_t patchIdx = 0; patchIdx < hierarchy.patches.size();
+           ++patchIdx) {
+        const PatchInfo &patch = hierarchy.patches[patchIdx];
+        auto vismf = GetVisMF(timestep, patch.level);
+        if (vismf == nullptr) {
+          delete dataTree;
+          return NULL;
+        }
+        double range[2] = {vismf->min(patch.fabIndex, compIndex),
+                           vismf->max(patch.fabIndex, compIndex)};
+        if (!(range[0] <= range[1])) {
+          // The VisMF header does not record per-FAB min/max values.
+          debug1 << "[amrex-plugin] Data extents unavailable for '"
+                 << component << "' (no min/max in VisMF header)\n";
+          delete dataTree;
+          return NULL;
+        }
+        dataTree->AddElement(static_cast<int>(patchIdx), range);
+      }
+      dataTree->Calculate(true);
+      df = avtIntervalTree::Destruct;
+      debug1 << "[amrex-plugin] Data extents ready for var '" << var
+             << "' patches=" << hierarchy.patches.size() << "\n";
+      return dataTree;
+    }
 
     if (strcmp(type, AUXILIARY_DATA_DOMAIN_NESTING_INFORMATION) == 0) {
       if (!requireHierarchy()) {
