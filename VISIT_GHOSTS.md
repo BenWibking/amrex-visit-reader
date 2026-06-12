@@ -26,6 +26,16 @@ will trust domain adjacency.
   Also store it under the `any_mesh` key; VisIt never asks for `domain == -1`
   later and simply pulls whatever the plugin tucked away in the cache. This
   matches what the built-in AMR readers (SAMRAI, FLASH, BATL, Chombo, etc.) do.
+  This plugin skips the build in the metadata server (following Boxlib3D's
+  `avtDatabase::OnlyServeUpMetaData()` guard) and gates it behind the
+  "Build domain boundaries for ghost synthesis" read option, because the
+  object costs O(#domains x #neighbors) memory on every engine rank.
+- Serving per-domain `avtLocalStructuredDomainBoundaryList` objects instead
+  of the cached global structure does not work for this plugin:
+  `avtLocalStructuredDomainBoundaryList::GlobalGenerate` hard-codes
+  `avtCurvilinearDomainBoundaries`, which rejects the `vtkRectilinearGrid`
+  datasets this reader produces ("VTK data object type not
+  VTK_STRUCTURED_GRID").
 - Build deterministic global IDs by flattening logical indices into a single
   `vtkIdType`. For a cell patch the formula is
   `gi + Nx * (gj + Ny * gk)` where `gi/gj/gk` are logical coordinates and

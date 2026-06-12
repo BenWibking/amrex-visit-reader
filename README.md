@@ -23,6 +23,33 @@ Not supported:
 AMReX encodes mesh dimensionality through the compile-time `AMREX_SPACEDIM`
 setting. The current CMake build configures AMReX for 3D plotfiles.
 
+## Read Options
+
+The reader exposes two options in VisIt's file-open options dialog (or via
+`SetDefaultFileOpenOptions("amrex-plotfile", ...)` in the CLI):
+
+* `Build domain boundaries for ghost synthesis` (default on). Builds and
+  caches the structured domain boundary object VisIt uses to synthesize
+  ghost zones between same-level patches. The object costs
+  O(#domains x #neighbors) memory on every engine rank, which dominates
+  per-rank memory for plotfiles with very large domain counts (it is never
+  built in the metadata server). Turn it off for hero-scale datasets; plots,
+  queries, and AMR nesting ghosts still work, but operators that need
+  synthesized boundary ghosts (for example Inverse Ghost Zone on
+  single-level data) will see no ghost zones, and the combined MinMax query
+  reports values without its usual formatted location string on
+  single-level data.
+* `Mesh structure is invariant across timesteps` (default off). Declares
+  that the patch layout and variable list are identical for every plotfile
+  in the series, letting VisIt skip metadata re-reads and SIL rebuilds on
+  timestep changes. Only enable it when the run never regrids.
+
+The plugin also publishes per-domain spatial extents and, when the VisMF
+headers record per-FAB min/max values, per-domain data extents. Operators
+that restrict their selection (Box, Slice, Clip, Threshold, Contour) then
+read only the domains that can contribute, which is the recommended way to
+explore datasets too large to load in full.
+
 ## Requirements
 
 Install VisIt before building the plugin. The build needs VisIt's development
@@ -177,6 +204,12 @@ macOS VisIt.app command path and can be edited for other installations:
 ./smoke_test.sh
 ./smoke_test_particles.sh
 ./smoke_test_particles_clearcache.sh
+./smoke_test_field_revisit.sh
+./smoke_test_large_cycles.sh
+./smoke_test_ghost_cells.sh
+./smoke_test_lazy_boundaries.sh
+./smoke_test_read_options.sh
+./smoke_test_domain_culling.sh
 ```
 
 For manual validation, plot meshes, scalar variables, vector variables, and
