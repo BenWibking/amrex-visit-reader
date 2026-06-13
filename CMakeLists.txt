@@ -29,16 +29,10 @@ set(CMAKE_INSTALL_RPATH_USE_LINK_PATH OFF)
 
 include(FetchContent)
 
-option(AMREX_DISABLE_STRUCTURED_BOUNDARY_CACHE
-       "Skip building/caching structured boundary metadata for ghost synthesis"
-       OFF)
-if(AMREX_DISABLE_STRUCTURED_BOUNDARY_CACHE)
-    add_compile_definitions(AMREX_DISABLE_STRUCTURED_BOUNDARY_CACHE)
-endif()
-
 SET(COMMON_SOURCES
 amrexPluginInfo.C
 amrexCommonPluginInfo.C
+avtamrexOptions.C
 )
 
 function(configure_amrex_plugin target_name)

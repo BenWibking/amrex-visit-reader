@@ -312,6 +312,10 @@ def field_domain_estimates(
   for level in levels:
     for box in level.boxes:
       base = mesh_bytes(box, id_bytes, include_ids)
+      # The plugin clears each FAB copy inside VisMF immediately after the
+      # data is converted, so only one FAB component per domain is resident
+      # at a time (the transient `one_read` term); the VTK output arrays are
+      # what accumulate.
       one_read = box.cells * real_bytes
       one_vtk = box.cells * 8
       scalar.append(DomainEstimate(f"level {level.level} fab {box.index}", base + one_read + one_vtk))
@@ -319,13 +323,13 @@ def field_domain_estimates(
       vector.append(
         DomainEstimate(
           f"level {level.level} fab {box.index}",
-          base + comps * one_read + comps * one_vtk + comps * one_vtk,
+          base + one_read + comps * one_vtk + comps * one_vtk,
         )
       )
       all_fields.append(
         DomainEstimate(
           f"level {level.level} fab {box.index}",
-          base + level.ncomp * (one_read + one_vtk),
+          base + one_read + level.ncomp * one_vtk,
         )
       )
   return scalar, vector, all_fields

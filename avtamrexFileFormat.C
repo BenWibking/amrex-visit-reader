@@ -64,15 +64,19 @@
 
 #include <cpptrace/cpptrace.hpp>
 
+#include <DBOptionsAttributes.h>
 #include <DebugStream.h>
 #include <Expression.h>
 #include <InvalidVariableException.h>
 #include <InvalidFilesException.h>
+#include <avtDatabase.h>
 #include <avtGhostData.h>
+#include <avtIntervalTree.h>
 #include <avtVariableCache.h>
 #include <void_ref_ptr.h>
 
 #include "avtamrexFileFormat.h"
+#include "avtamrexOptions.h"
 
 namespace {
 
@@ -449,7 +453,7 @@ inline const char *CenteringToString(avtCentering cent) {
 inline void LogPatchSummary(const PatchInfo &patch,
                             const std::string &context) {
   debug3 << "[amrex-plugin] " << context
-         << " mesh=" << patch.meshName << " level=" << patch.level
+         << " level=" << patch.level
          << " centering=" << CenteringToString(patch.centering)
          << " offset=" << JoinContainer(patch.offset)
          << " extent=" << JoinContainer(patch.extent)
@@ -1321,12 +1325,25 @@ std::string avtamrexFileFormat::MakeDefaultMeshName(
 //
 // ****************************************************************************
 
-avtamrexFileFormat::avtamrexFileFormat(const char *filename)
+avtamrexFileFormat::avtamrexFileFormat(const char *filename,
+                                       const DBOptionsAttributes *readOpts)
     : avtMTMDFileFormat(filename) {
   InstallSegfaultTraceHandler();
   AmrexRuntime::Retain();
   debug1 << "[amrex-plugin] Constructing reader for plotfile '" << filename
          << "'\n";
+
+  if (readOpts != nullptr) {
+    if (readOpts->FindIndex(AMREX_OPT_DOMAIN_BOUNDARIES) >= 0) {
+      buildDomainBoundaries_ = readOpts->GetBool(AMREX_OPT_DOMAIN_BOUNDARIES);
+    }
+    if (readOpts->FindIndex(AMREX_OPT_INVARIANT_MESH) >= 0) {
+      invariantMesh_ = readOpts->GetBool(AMREX_OPT_INVARIANT_MESH);
+    }
+  }
+  debug1 << "[amrex-plugin] Read options: domainBoundaries="
+         << (buildDomainBoundaries_ ? "on" : "off")
+         << " invariantMesh=" << (invariantMesh_ ? "on" : "off") << "\n";
 
   std::string requestedPath = TrimTrailingSeparators(filename);
   if (requestedPath.empty()) {
@@ -1834,11 +1851,6 @@ vtkDataArray *avtamrexFileFormat::GetParticleVectorVar(
   return array;
 }
 
-void avtamrexFileFormat::QueueVisMFClear(const VisMFCacheKey &key, int fabIndex,
-                                         int compIndex) const {
-  vismfClearList_.push_back({key, fabIndex, compIndex});
-}
-
 std::string avtamrexFileFormat::GetMultiFabName(int timeState,
                                                 int level) const {
   const auto key = std::make_pair(timeState, level);
@@ -1931,26 +1943,6 @@ void avtamrexFileFormat::FreeUpResources(void) {
   std::fill(particleHierarchyInitialized_.begin(),
             particleHierarchyInitialized_.end(), false);
 
-  if (!vismfClearList_.empty()) {
-    std::sort(vismfClearList_.begin(), vismfClearList_.end());
-    auto last = std::unique(vismfClearList_.begin(), vismfClearList_.end(),
-                            [](const VisMFClearEntry &lhs,
-                               const VisMFClearEntry &rhs) {
-                              return lhs.key.timeState == rhs.key.timeState &&
-                                     lhs.key.level == rhs.key.level &&
-                                     lhs.fabIndex == rhs.fabIndex &&
-                                     lhs.compIndex == rhs.compIndex;
-                            });
-    vismfClearList_.erase(last, vismfClearList_.end());
-
-    for (const auto &entry : vismfClearList_) {
-      auto it = vismfCache_.find(entry.key);
-      if (it != vismfCache_.end() && it->second != nullptr) {
-        it->second->clear(entry.fabIndex, entry.compIndex);
-      }
-    }
-    vismfClearList_.clear();
-  }
   vismfCache_.clear();
 }
 
@@ -1959,13 +1951,20 @@ void avtamrexFileFormat::PopulateHierarchyCache(int timeState) {
   hierarchyMap.clear();
 
   std::string meshName = MakeDefaultMeshName(plotfilePaths_[timeState]);
-  MeshPatchHierarchy hierarchy =
+  MeshPatchHierarchy built =
       BuildHierarchyFromPlotfile(meshName, *GetPlotFile(timeState));
-  hierarchy.metadataInitialized = true;
-  hierarchyMap[meshName] = hierarchy;
+  built.metadataInitialized = true;
+  MeshPatchHierarchy &hierarchy = hierarchyMap[meshName];
+  hierarchy = std::move(built);
 
-#if !defined(AMREX_DISABLE_STRUCTURED_BOUNDARY_CACHE)
-  if (cache != nullptr) {
+  // Building and caching the global structured-boundary object costs
+  // O(#domains x #neighbors) memory on every rank, so skip it in the
+  // metadata server and honor the read option that disables it for very
+  // large domain counts. VisIt only consumes this object from the cache;
+  // without it, ghost synthesis from domain boundaries is unavailable but
+  // plotting still works (nesting ghosts are attached per patch in GetMesh).
+  if (buildDomainBoundaries_ && !avtDatabase::OnlyServeUpMetaData() &&
+      cache != nullptr) {
     avtStructuredDomainBoundaries *structured =
         BuildStructuredDomainBoundaries(hierarchy);
     if (structured != nullptr) {
@@ -1979,12 +1978,10 @@ void avtamrexFileFormat::PopulateHierarchyCache(int timeState) {
       debug1 << "[amrex-plugin] Cached structured boundaries for mesh '"
              << meshName << "' timeState=" << timeState << "\n";
     }
+  } else {
+    debug2 << "[amrex-plugin] Skipping structured boundary cache for mesh '"
+           << meshName << "' (mdserver or disabled by read option)\n";
   }
-#else
-  debug2 << "[amrex-plugin] Skipping structured boundary cache for mesh '"
-         << meshName << "' due to AMREX_DISABLE_STRUCTURED_BOUNDARY_CACHE"
-         << "\n";
-#endif
 
   meshMap_[meshName] = std::tuple(DatasetType::Field, meshName);
   debug2 << "[amrex-plugin] Registered AMR mesh '" << meshName
@@ -2030,10 +2027,19 @@ void avtamrexFileFormat::BuildFieldHierarchy(avtDatabaseMetaData *md,
     meshMd->numGroups = hierarchy.numLevels;
     meshMd->groupTitle = "levels";
     meshMd->groupPieceName = "level";
-    meshMd->blockNames = hierarchy.blockNames;
+    // Explicit blockNames would put one std::string per domain into the
+    // metadata, the SIL, and every serialized copy of both; VisIt generates
+    // "patch N" style names from blockPieceName when the list is empty.
     meshMd->loadBalanceScheme = LOAD_BALANCE_STRIDE_ACROSS_BLOCKS;
-    meshMd->containsGhostZones = AVT_HAS_GHOSTS;
-    meshMd->presentGhostZoneTypes = (1 << AVT_NESTING_GHOST_ZONES);
+    if (buildDomainBoundaries_ || hierarchy.numLevels > 1) {
+      meshMd->containsGhostZones = AVT_HAS_GHOSTS;
+      meshMd->presentGhostZoneTypes = (1 << AVT_NESTING_GHOST_ZONES);
+    } else {
+      // With ghost synthesis disabled and a single level there are no
+      // nesting ghosts either, so don't promise ghost data that will
+      // never be attached.
+      meshMd->containsGhostZones = AVT_NO_GHOSTS;
+    }
     md->Add(meshMd);
     intVector blockIds = hierarchy.groupIds;
     md->AddGroupInformation(hierarchy.numLevels,
@@ -2083,6 +2089,7 @@ void avtamrexFileFormat::BuildParticleHierarchy(avtDatabaseMetaData *md,
       [&](const std::string &meshName, int spatialDim,
           const std::vector<int> &numGrids) -> MeshPatchHierarchy {
         MeshPatchHierarchy hierarchy;
+        hierarchy.meshName = meshName;
         hierarchy.numLevels = static_cast<int>(numGrids.size());
         hierarchy.topologicalDim = 0;
         hierarchy.spatialDim = spatialDim;
@@ -2102,27 +2109,16 @@ void avtamrexFileFormat::BuildParticleHierarchy(avtDatabaseMetaData *md,
               static_cast<size_t>(std::max(0, grids)));
           for (int grid = 0; grid < grids; ++grid) {
             PatchInfo patch;
-            patch.meshName = meshName;
             patch.level = level;
             patch.fabIndex = grid;
             patch.centering = AVT_NODECENT;
             patch.spatialDim = spatialDim;
-            patch.offset.assign(3, 0);
-            patch.extent.assign(3, 0);
-            patch.storageOffset.assign(3, 0);
-            patch.storageExtent.assign(3, 0);
-            patch.storageOffsetCanonical.assign(3, 0);
-            patch.storageExtentCanonical.assign(3, 0);
 
             hierarchy.patches.push_back(patch);
             int patchIndex = static_cast<int>(hierarchy.patches.size()) - 1;
             hierarchy.levelIdsPerPatch.push_back(level);
             hierarchy.groupIds.push_back(level);
             hierarchy.patchesPerLevel[level].push_back(patchIndex);
-
-            std::ostringstream blockName;
-            blockName << "level" << level << ",grid" << grid;
-            hierarchy.blockNames.push_back(blockName.str());
           }
         }
 
@@ -2195,9 +2191,9 @@ void avtamrexFileFormat::BuildParticleHierarchy(avtDatabaseMetaData *md,
     speciesCache.emplace(entry, info);
     meshMap_[info.meshName] = std::tuple(DatasetType::Particle, entry);
 
-    MeshPatchHierarchy particleHierarchy =
+    MeshPatchHierarchy &particleHierarchy = hierarchyMap[info.meshName];
+    particleHierarchy =
         buildParticleHierarchy(info.meshName, info.spatialDim, numGrids);
-    hierarchyMap[info.meshName] = particleHierarchy;
 
     if (md != nullptr) {
       avtMeshMetaData *meshMd = new avtMeshMetaData;
@@ -2211,7 +2207,6 @@ void avtamrexFileFormat::BuildParticleHierarchy(avtDatabaseMetaData *md,
       meshMd->numGroups = particleHierarchy.numLevels;
       meshMd->groupTitle = "levels";
       meshMd->groupPieceName = "level";
-      meshMd->blockNames = particleHierarchy.blockNames;
       meshMd->loadBalanceScheme = LOAD_BALANCE_STRIDE_ACROSS_BLOCKS;
       meshMd->containsGhostZones = AVT_NO_GHOSTS;
       md->Add(meshMd);
@@ -2336,6 +2331,7 @@ void avtamrexFileFormat::RegisterFieldVariables(
 MeshPatchHierarchy avtamrexFileFormat::BuildHierarchyFromPlotfile(
     const std::string &visitMeshName, amrex::PlotFileData &plotfile) {
   MeshPatchHierarchy hierarchy;
+  hierarchy.meshName = visitMeshName;
   hierarchy.numLevels = plotfile.finestLevel() + 1;
   hierarchy.topologicalDim = plotfile.spaceDim();
   hierarchy.spatialDim = plotfile.spaceDim();
@@ -2356,7 +2352,6 @@ MeshPatchHierarchy avtamrexFileFormat::BuildHierarchyFromPlotfile(
     for (int idx = 0; idx < boxes.size(); ++idx) {
       const amrex::Box &box = boxes[idx];
       PatchInfo patch;
-      patch.meshName = visitMeshName;
       patch.level = level;
       patch.fabIndex = idx;
       patch.cellBox = box;
@@ -2380,10 +2375,6 @@ MeshPatchHierarchy avtamrexFileFormat::BuildHierarchyFromPlotfile(
       hierarchy.levelIdsPerPatch.push_back(level);
       hierarchy.groupIds.push_back(level);
       hierarchy.patchesPerLevel[level].push_back(patchIndex);
-
-      std::ostringstream blockName;
-      blockName << "level" << level << ",patch" << idx;
-      hierarchy.blockNames.push_back(blockName.str());
     }
   }
 
@@ -2628,21 +2619,21 @@ void *avtamrexFileFormat::GetAuxiliaryData(const char *var, int timestep,
 
   if (type != nullptr &&
       strcmp(type, AUXILIARY_DATA_DOMAIN_BOUNDARY_INFORMATION) == 0) {
-    std::string meshNameResolved;
-    const MeshPatchHierarchy *hier = nullptr;
-    if (!resolveMesh(meshNameResolved, hier)) {
-      return NULL;
-    }
-    return avtMTMDFileFormat::GetAuxiliaryData(meshNameResolved.c_str(),
-                                               timestep, domain, type, args,
-                                               df);
+    // Per-domain boundary requests only arrive when the cached global
+    // boundary object is absent (boundary building disabled by read option).
+    // VisIt would assemble the per-domain lists into an
+    // avtCurvilinearDomainBoundaries object (hard-coded in
+    // avtLocalStructuredDomainBoundaryList::GlobalGenerate), which rejects
+    // the rectilinear grids this plugin produces, so serving local lists
+    // here would only generate engine errors. Return nothing instead;
+    // plotting proceeds without boundary-synthesized ghosts.
+    debug2 << "[amrex-plugin] Declining per-domain boundary request"
+           << " (domain=" << domain << "); structured boundary cache is"
+           << " disabled\n";
+    return NULL;
   }
 
   if (type != nullptr) {
-    if (strcmp(type, AUXILIARY_DATA_DOMAIN_BOUNDARY_INFORMATION) == 0) {
-      debug2 << "[amrex-plugin] Delegating domain boundary request to base cache" << "\n";
-      return avtMTMDFileFormat::GetAuxiliaryData(var, timestep, domain, type, args, df);
-    }
     const MeshPatchHierarchy *hierarchyPtr = nullptr;
     std::string meshName;
     auto requireHierarchy = [&]() -> bool {
@@ -2651,6 +2642,95 @@ void *avtamrexFileFormat::GetAuxiliaryData(const char *var, int timestep,
       }
       return resolveMesh(meshName, hierarchyPtr);
     };
+
+    if (strcmp(type, AUXILIARY_DATA_SPATIAL_EXTENTS) == 0) {
+      // Per-domain bounding boxes let the Box/Slice/Clip operators restrict
+      // the domain list before any I/O happens, so memory scales with the
+      // selected subvolume instead of the whole dataset.
+      if (!requireHierarchy()) {
+        return NULL;
+      }
+      const MeshPatchHierarchy &hierarchy = *hierarchyPtr;
+      const int dims = std::max(1, hierarchy.spatialDim);
+      auto *spatialTree = new avtIntervalTree(
+          static_cast<int>(hierarchy.patches.size()), dims);
+      std::vector<double> bounds(static_cast<size_t>(2 * dims));
+      for (size_t patchIdx = 0; patchIdx < hierarchy.patches.size();
+           ++patchIdx) {
+        const PatchInfo &patch = hierarchy.patches[patchIdx];
+        for (int axis = 0; axis < dims; ++axis) {
+          const uint64_t cells =
+              axis < static_cast<int>(patch.extent.size())
+                  ? std::max<uint64_t>(patch.extent[axis], 1)
+                  : 1;
+          const double lo = patch.origin[axis];
+          bounds[2 * axis] = lo;
+          bounds[2 * axis + 1] =
+              lo + static_cast<double>(cells) * patch.spacing[axis];
+        }
+        spatialTree->AddElement(static_cast<int>(patchIdx), bounds.data());
+      }
+      spatialTree->Calculate(true);
+      df = avtIntervalTree::Destruct;
+      debug1 << "[amrex-plugin] Spatial extents ready for mesh '" << meshName
+             << "' patches=" << hierarchy.patches.size() << "\n";
+      return spatialTree;
+    }
+
+    if (strcmp(type, AUXILIARY_DATA_DATA_EXTENTS) == 0) {
+      // Per-domain variable ranges come straight from the VisMF headers, so
+      // Contour/Threshold pipelines can skip domains without reading data.
+      if (var == nullptr) {
+        return NULL;
+      }
+      auto varIt = varMap_.find(var);
+      if (varIt == varMap_.end()) {
+        debug2 << "[amrex-plugin] Data extents request for non-scalar var '"
+               << var << "'; nothing to serve\n";
+        return NULL;
+      }
+      if (!requireHierarchy()) {
+        return NULL;
+      }
+      const MeshPatchHierarchy &hierarchy = *hierarchyPtr;
+      const std::string &component = std::get<1>(varIt->second);
+      auto plotfile = GetPlotFile(timestep);
+      const auto &varNames = plotfile->varNames();
+      auto compIt = std::find(varNames.begin(), varNames.end(), component);
+      if (compIt == varNames.end()) {
+        debug1 << "[amrex-plugin] Data extents missing component '"
+               << component << "'\n";
+        return NULL;
+      }
+      const int compIndex = static_cast<int>(compIt - varNames.begin());
+
+      auto *dataTree = new avtIntervalTree(
+          static_cast<int>(hierarchy.patches.size()), 1);
+      for (size_t patchIdx = 0; patchIdx < hierarchy.patches.size();
+           ++patchIdx) {
+        const PatchInfo &patch = hierarchy.patches[patchIdx];
+        auto vismf = GetVisMF(timestep, patch.level);
+        if (vismf == nullptr) {
+          delete dataTree;
+          return NULL;
+        }
+        double range[2] = {vismf->min(patch.fabIndex, compIndex),
+                           vismf->max(patch.fabIndex, compIndex)};
+        if (!(range[0] <= range[1])) {
+          // The VisMF header does not record per-FAB min/max values.
+          debug1 << "[amrex-plugin] Data extents unavailable for '"
+                 << component << "' (no min/max in VisMF header)\n";
+          delete dataTree;
+          return NULL;
+        }
+        dataTree->AddElement(static_cast<int>(patchIdx), range);
+      }
+      dataTree->Calculate(true);
+      df = avtIntervalTree::Destruct;
+      debug1 << "[amrex-plugin] Data extents ready for var '" << var
+             << "' patches=" << hierarchy.patches.size() << "\n";
+      return dataTree;
+    }
 
     if (strcmp(type, AUXILIARY_DATA_DOMAIN_NESTING_INFORMATION) == 0) {
       if (!requireHierarchy()) {
@@ -2672,6 +2752,14 @@ void *avtamrexFileFormat::GetAuxiliaryData(const char *var, int timestep,
 
     if (strcmp(type, AUXILIARY_DATA_GLOBAL_NODE_IDS) == 0 ||
         strcmp(type, "GLOBAL_NODE_IDS") == 0) {
+      if (!buildDomainBoundaries_) {
+        // Global ids are part of the same ghost-synthesis package as the
+        // structured boundaries; serving them without boundaries sends
+        // VisIt down a ghost-node path that breaks queries.
+        debug2 << "[amrex-plugin] Declining global node id request; ghost"
+               << " synthesis is disabled\n";
+        return NULL;
+      }
       if (!requireHierarchy()) {
         return NULL;
       }
@@ -2696,6 +2784,11 @@ void *avtamrexFileFormat::GetAuxiliaryData(const char *var, int timestep,
 
     if (strcmp(type, AUXILIARY_DATA_GLOBAL_ZONE_IDS) == 0 ||
         strcmp(type, "GLOBAL_ZONE_IDS") == 0) {
+      if (!buildDomainBoundaries_) {
+        debug2 << "[amrex-plugin] Declining global zone id request; ghost"
+               << " synthesis is disabled\n";
+        return NULL;
+      }
       if (!requireHierarchy()) {
         return NULL;
       }
@@ -2789,7 +2882,7 @@ avtamrexFileFormat::CreateRectilinearPatch(const PatchInfo &patch) const {
   grid->SetXCoordinates(coords[0]);
   grid->SetYCoordinates(coords[1]);
   grid->SetZCoordinates(coords[2]);
-  debug5 << "[amrex-plugin] CreateRectilinearPatch mesh=" << patch.meshName
+  debug5 << "[amrex-plugin] CreateRectilinearPatch"
          << " level=" << patch.level << " logicalLower=[" << patch.logicalLower[0]
          << "," << patch.logicalLower[1] << "," << patch.logicalLower[2]
          << "] logicalUpper=[" << patch.logicalUpper[0] << ","
@@ -3296,8 +3389,8 @@ void avtamrexFileFormat::AddGhostZonesForPatch(
 
 vtkDataArray *avtamrexFileFormat::LoadScalarPatchData(
     int timeState, const PatchInfo &patch, const std::string &component) const {
-  debug1 << "[amrex-plugin] LoadScalarPatchData mesh='" << patch.meshName
-         << "' component='" << component << "' offset="
+  debug1 << "[amrex-plugin] LoadScalarPatchData component='" << component
+         << "' offset="
          << JoinContainer(patch.offset) << " extent="
          << JoinContainer(patch.extent) << "\n";
 
@@ -3335,7 +3428,6 @@ vtkDataArray *avtamrexFileFormat::LoadScalarPatchData(
   }
 
   const amrex::FArrayBox &fab = vismf->GetFab(patch.fabIndex, compIndex);
-  QueueVisMFClear({timeState, patch.level}, patch.fabIndex, compIndex);
   int fabComp = compIndex;
   if (fab.nComp() == 1 && compIndex != 0) {
     // VisMF::GetFab(fab, comp) returns a single-component FArrayBox.
@@ -3400,14 +3492,18 @@ vtkDataArray *avtamrexFileFormat::LoadScalarPatchData(
     }
   }
 
+  // Release the FAB copy held inside VisMF right away; keeping it for the
+  // whole timestep would hold a duplicate of every field read on this rank.
+  vismf->clear(patch.fabIndex, compIndex);
+
   return array;
 }
 
 vtkDataArray *avtamrexFileFormat::LoadVectorPatchData(
     int timeState, const PatchInfo &patch,
     const std::vector<std::string> &components) const {
-  debug1 << "[amrex-plugin] LoadVectorPatchData mesh='" << patch.meshName
-         << "' components=" << JoinStrings(components) << "' offset="
+  debug1 << "[amrex-plugin] LoadVectorPatchData components='"
+         << JoinStrings(components) << "' offset="
          << JoinContainer(patch.offset) << " extent="
          << JoinContainer(patch.extent) << "\n";
 
@@ -3442,12 +3538,12 @@ vtkDataArray *avtamrexFileFormat::LoadVectorPatchData(
         debug1 << "[amrex-plugin] LoadVectorPatchData component has"
                << " unexpected component count="
                << component->GetNumberOfComponents() << "\n";
-        EXCEPTION1(InvalidVariableException, patch.meshName.c_str());
+        EXCEPTION1(InvalidVariableException, components.front().c_str());
       }
       if (component->GetNumberOfTuples() != tupleCount) {
         debug1 << "[amrex-plugin] LoadVectorPatchData tuple count"
                << " mismatch for a component\n";
-        EXCEPTION1(InvalidVariableException, patch.meshName.c_str());
+        EXCEPTION1(InvalidVariableException, components.front().c_str());
       }
       if (vtkDoubleArray::SafeDownCast(component) != nullptr) {
         hasDoubleComponent = true;
@@ -3456,7 +3552,7 @@ vtkDataArray *avtamrexFileFormat::LoadVectorPatchData(
       } else {
         debug1 << "[amrex-plugin] LoadVectorPatchData unsupported"
                << " vtkDataArray subtype for component\n";
-        EXCEPTION1(InvalidVariableException, patch.meshName.c_str());
+        EXCEPTION1(InvalidVariableException, components.front().c_str());
       }
     }
 
@@ -3495,7 +3591,7 @@ vtkDataArray *avtamrexFileFormat::LoadVectorPatchData(
         if (floatComp == nullptr) {
         debug1 << "[amrex-plugin] LoadVectorPatchData expected"
                << " float component but found different type\n";
-        EXCEPTION1(InvalidVariableException, patch.meshName.c_str());
+        EXCEPTION1(InvalidVariableException, components.front().c_str());
       }
         const float *src = floatComp->GetPointer(0);
         for (vtkIdType tuple = 0; tuple < tupleCount; ++tuple) {
@@ -3509,7 +3605,7 @@ vtkDataArray *avtamrexFileFormat::LoadVectorPatchData(
     if (result == nullptr) {
       debug1 << "[amrex-plugin] LoadVectorPatchData could not determine"
              << " a suitable output array type\n";
-      EXCEPTION1(InvalidVariableException, patch.meshName.c_str());
+      EXCEPTION1(InvalidVariableException, components.front().c_str());
     }
 
     for (vtkDataArray *component : loadedComponents) {
@@ -3583,7 +3679,7 @@ vtkDataSet *avtamrexFileFormat::GetMesh(int timeState, int domain,
 
     const PatchInfo &patch = hierarchy.patches.at(domain);
     debug5 << "[amrex-plugin] GetMesh domain=" << domain
-           << " level=" << patch.level << " using mesh " << patch.meshName
+           << " level=" << patch.level << " using mesh " << visit_meshname
            << "\n";
 
     std::ostringstream ctx;

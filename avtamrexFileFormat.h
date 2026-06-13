@@ -28,6 +28,7 @@
 #include <avtStructuredDomainNesting.h>
 #include <avtTypes.h>
 
+class DBOptionsAttributes;
 class vtkDataArray;
 class vtkDataSet;
 class vtkRectilinearGrid;
@@ -38,18 +39,13 @@ class PlotFileDataImpl;
 class VisMF;
 }
 
+// At hero scale this struct is replicated once per domain on every rank,
+// so keep it free of heap-allocated members.
 struct PatchInfo {
   int level{0};
-  std::vector<long long> offset;
-  std::vector<uint64_t> extent;
+  std::array<long long, 3> offset{{0, 0, 0}};
+  std::array<uint64_t, 3> extent{{0, 0, 0}};
   amrex::Box cellBox;
-  std::vector<long long> storageOffset;
-  std::vector<uint64_t> storageExtent;
-  std::vector<uint64_t> storageOffsetCanonical;
-  std::vector<uint64_t> storageExtentCanonical;
-  std::vector<std::string> storageAxisLabels;
-  std::array<int, 3> storageToVtk{{0, 1, 2}};
-  std::string meshName;
   double origin[3]{0.0, 0.0, 0.0};
   double spacing[3]{0.0, 0.0, 0.0};
   avtCentering centering{AVT_UNKNOWN_CENT};
@@ -60,12 +56,12 @@ struct PatchInfo {
 };
 
 struct MeshPatchHierarchy {
+  std::string meshName;
   std::vector<PatchInfo> patches;
   int numLevels{0};
   std::vector<std::array<int, 3>> levelRefinementRatios;
   std::vector<int> levelIdsPerPatch;
   std::vector<int> groupIds;
-  std::vector<std::string> blockNames;
   std::vector<int> levelValues;
   std::vector<std::vector<int>> patchesPerLevel;
   std::vector<std::array<double, 3>> levelCellSizes;
@@ -76,7 +72,7 @@ struct MeshPatchHierarchy {
 
 class avtamrexFileFormat : public avtMTMDFileFormat {
 public:
-  avtamrexFileFormat(const char *);
+  avtamrexFileFormat(const char *, const DBOptionsAttributes *);
   ~avtamrexFileFormat() override;
 
   int GetNTimesteps(void) override;
@@ -88,8 +84,8 @@ public:
   vtkDataArray *GetVar(int, int, const char *) override;
   vtkDataArray *GetVectorVar(int, int, const char *) override;
 
-  bool HasInvariantMetaData(void) const override { return false; }
-  bool HasInvariantSIL(void) const override { return false; }
+  bool HasInvariantMetaData(void) const override { return invariantMesh_; }
+  bool HasInvariantSIL(void) const override { return invariantMesh_; }
 
   void GetCycles(std::vector<int> &) override;
   void GetTimes(std::vector<double> &) override;
@@ -157,25 +153,6 @@ protected:
     }
   };
 
-  struct VisMFClearEntry {
-    VisMFCacheKey key;
-    int fabIndex{0};
-    int compIndex{0};
-
-    bool operator<(const VisMFClearEntry &other) const {
-      if (key < other.key) {
-        return true;
-      }
-      if (other.key < key) {
-        return false;
-      }
-      if (fabIndex != other.fabIndex) {
-        return fabIndex < other.fabIndex;
-      }
-      return compIndex < other.compIndex;
-    }
-  };
-
   struct ParticleVarInfo {
     std::string meshName;
     std::string speciesName;
@@ -192,6 +169,10 @@ protected:
   };
 
 
+  // Read options (see avtamrexOptions.h).
+  bool buildDomainBoundaries_{true};
+  bool invariantMesh_{false};
+
   std::vector<std::string> plotfilePaths_;
   std::vector<unsigned long long> iterationIndex_;
   mutable std::vector<double> timeValues_;
@@ -200,7 +181,6 @@ protected:
       plotfileImplCache_;
   mutable std::map<std::pair<int, int>, std::string> mfNameCache_;
   mutable std::map<VisMFCacheKey, std::shared_ptr<amrex::VisMF>> vismfCache_;
-  mutable std::vector<VisMFClearEntry> vismfClearList_;
   std::unordered_map<std::string, std::tuple<std::string, std::string>> varMap_;
   std::unordered_map<std::string,
                      std::tuple<std::string, std::vector<std::string>>>
@@ -253,8 +233,6 @@ protected:
   std::shared_ptr<amrex::PlotFileData> GetPlotFile(int timeState) const;
   std::shared_ptr<amrex::PlotFileDataImpl> GetPlotFileImpl(int timeState) const;
   std::shared_ptr<amrex::VisMF> GetVisMF(int timeState, int level) const;
-  void QueueVisMFClear(const VisMFCacheKey &key, int fabIndex,
-                       int compIndex) const;
   std::string GetMultiFabName(int timeState, int level) const;
   std::vector<std::pair<unsigned long long, std::string>>
   ResolveDescriptorPaths(const std::string &descriptorPath,
